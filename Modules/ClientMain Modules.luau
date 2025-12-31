@@ -1,5 +1,5 @@
--- ClientMain Modules
--- Main client-side gun manager, handles tool equipping, firing, and client to server replication.
+-- ClientMain Modules: client-side tool handler adapted to centralized remotes.
+
 local ClientMain = {}
 ClientMain.__index = ClientMain
 
@@ -17,12 +17,12 @@ local RemotesFolder = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("Re
 local ReplicateSound = RemotesFolder:WaitForChild("ReplicateSound")
 local ReplicateBullet = RemotesFolder:WaitForChild("ReplicateBullet")
 local ReplicateImpactSound = RemotesFolder:WaitForChild("ReplicateImpactSound")
+local VerifyHitRemote = RemotesFolder:WaitForChild("VerifyHit")
 
 local Utils = require(ReplicatedStorage.Modules:WaitForChild("Utils"))
 local Tracer = require(ReplicatedStorage.Modules.Client:WaitForChild("Tracer"))
 local FastCast = require(ReplicatedStorage.Modules.Shared:WaitForChild("FastCastRedux"))
 
--- Constructor
 function ClientMain.new(tool, player)
 	assert(tool and player, "tool and player required")
 	local self = setmetatable({}, ClientMain)
@@ -34,17 +34,17 @@ function ClientMain.new(tool, player)
 	self.root = self.character:WaitForChild("HumanoidRootPart")
 	self.camera = workspace.CurrentCamera
 
-	-- modules & dependencies
 	self.Utils = Utils
 	self.Tracer = Tracer
-
 	self.fastCast = Tracer.getCaster()
 
-	-- config & assets
-	self.config = require(tool:WaitForChild("Config"))
-	-- GUI lives under ReplicatedStorage.Modules.ClientMain (folder); fallback to tool
-	self.guiTemplate = ModulesFolder:FindFirstChild("GUI") or tool:FindFirstChild("GUI")
-	self.firingPoint = tool:FindFirstChild("FiringPoint", true)
+	-- safe require of Config (should exist)
+	local ok, cfg = pcall(function() return require(tool:WaitForChild("Config")) end)
+	self.config = ok and cfg or {}
+
+	self.guiTemplate = ModulesFolder:FindFirstChild("GUI")
+
+	self.firingPoint = tool:FindFirstChild("FiringPoint", true) or tool.Handle and tool.Handle:FindFirstChild("FiringPoint", true)
 	if not self.firingPoint then
 		local att = Instance.new("Attachment")
 		att.Name = "FiringPoint"
@@ -52,18 +52,19 @@ function ClientMain.new(tool, player)
 		self.firingPoint = att
 	end
 
-	-- animations & sounds
-	local function createAnim(id) return Utils.createAnimation(self.humanoid, id) end
+	-- animations & sounds helpers
+	local function createAnim(id) if not id then return nil end return Utils.createAnimation(self.humanoid, id) end
+	local function createSnd(id) if not id then return nil end return Utils.createSound(tool:FindFirstChild("Handle") or tool, id) end
+
 	self.equipAnimation = createAnim(self.config.EquipAnimation)
 	self.idleAnimation = createAnim(self.config.IdleAnimation)
 	self.fireAnimation = createAnim(self.config.FireAnimation)
 	self.reloadAnimation = createAnim(self.config.ReloadAnimation)
 	self.reloadFinishAnimation = createAnim(self.config.ReloadFinishAnimation)
 
-	local function createSnd(id) return Utils.createSound(tool:FindFirstChild("Handle") or tool, id) end  -- Removed vol parameter
-	self.fireSound = createSnd(self.config.FireSound)  -- No volume
-	self.reloadSound = createSnd(self.config.ReloadSound)  -- No volume
-	self.reloadFinishSound = createSnd(self.config.ReloadFinishSound)  -- No volume
+	self.fireSound = createSnd(self.config.FireSound)
+	self.reloadSound = createSnd(self.config.ReloadSound)
+	self.reloadFinishSound = createSnd(self.config.ReloadFinishSound)
 
 	-- state
 	self.gui = nil
@@ -71,8 +72,8 @@ function ClientMain.new(tool, player)
 	self.lastFired = 0
 	self.mouseDown = false
 	self.reloading = false
-	self.ammo = self.config.MagSize or 0
 	self.magSize = self.config.MagSize or 0
+	self.ammo = self.magSize
 	self.teammates = {}
 	self.enemies = {}
 	self.activeCosmeticBullets = {}
@@ -85,11 +86,9 @@ function ClientMain.new(tool, player)
 	self._connections = {}
 	self._fastCastConns = {}
 
-	-- input handlers
 	self.keybindHandler = ClientKeybindHandler.new(self)
 	self.mobileHandler = ClientMobileHandler.new(self)
 
-	-- tracer behavior template
 	self.bulletSpeed = self.config.ProjectileSpeed or 3000
 	self.behaviorTemplate = Tracer.newBehavior(
 		self.config.TracerTemplate,
@@ -102,23 +101,19 @@ function ClientMain.new(tool, player)
 	return self
 end
 
--- Build RaycastParams ignore list
 function ClientMain:_makeBulletParams()
 	local params = RaycastParams.new()
 	params.FilterType = Enum.RaycastFilterType.Exclude
 	local ignoreList = {}
-
 	table.insert(ignoreList, self.character)
 	if self.config.TracerContainer and typeof(self.config.TracerContainer) == "Instance" then
 		table.insert(ignoreList, self.config.TracerContainer)
 	end
-
 	if self.config.IgnoreTeammates == true then
 		for _, tm in ipairs(self.teammates) do
 			if tm and tm:IsA("Model") then table.insert(ignoreList, tm) end
 		end
 	end
-
 	params.FilterDescendantsInstances = ignoreList
 	return params
 end
@@ -148,7 +143,6 @@ function ClientMain:refreshGui()
 	end
 end
 
--- scope helpers
 function ClientMain:isInFirstPerson()
 	local head = self.character:FindFirstChild("Head")
 	if not head then return false end
@@ -161,7 +155,7 @@ function ClientMain:scopeIn()
 		UserInputService.MouseDeltaSensitivity = 0.3
 		self.camera.FieldOfView = 30
 		if self.config.AimDownSights then
-			self.tool.ToolClient:SetAttribute("Aiming", true)
+			self.tool:SetAttribute("Aiming", true)
 		end
 	end
 end
@@ -171,12 +165,11 @@ function ClientMain:scopeOut()
 		UserInputService.MouseDeltaSensitivity = 1
 		self.camera.FieldOfView = 70
 		if self.config.AimDownSights then
-			self.tool.ToolClient:SetAttribute("Aiming", false)
+			self.tool:SetAttribute("Aiming", false)
 		end
 	end
 end
 
--- Suppression sound
 function ClientMain:playSuppressionSound()
 	if not self.config.SuppressionEnabled then return end
 	local cam = workspace.CurrentCamera
@@ -184,22 +177,18 @@ function ClientMain:playSuppressionSound()
 
 	local fx = ReplicatedStorage:FindFirstChild("FX")
 	local suppressionFolder = fx and (fx:FindFirstChild("Suppression") or fx:FindFirstChild("Suppresion"))
-
 	if not suppressionFolder then return end
 
 	local sounds = {}
 	for _,child in ipairs(suppressionFolder:GetDescendants()) do
 		if child:IsA("Sound") then table.insert(sounds, child) end
 	end
-
 	if #sounds == 0 then return end
 
 	local chosen = sounds[self.RNG:NextInteger(1, #sounds)]:Clone()
-
 	chosen.PlaybackSpeed = math.random(95,105)/100
 	chosen.RollOffMode = Enum.RollOffMode.Linear
 	chosen.Parent = cam
-
 	chosen:Play()
 	Debris:AddItem(chosen, chosen.TimeLength > 0 and chosen.TimeLength or 2)
 end
@@ -213,19 +202,16 @@ function ClientMain:playImpactSound(impactType, hitPosition, hitNormal)
 	for _, child in ipairs(impactFolder:GetChildren()) do
 		if child:IsA("Sound") then table.insert(impactSounds, child) end
 	end
-
 	if #impactSounds == 0 then return end
 
 	local chosen = impactSounds[self.RNG:NextInteger(1,#impactSounds)]:Clone()
 	local attachment = Instance.new("Attachment")
-
 	attachment.WorldPosition = hitPosition
 	attachment.WorldCFrame = CFrame.new(hitPosition, hitPosition + (hitNormal or Vector3.new(0,1,0)))
 	attachment.Parent = workspace.Terrain
 
 	chosen.Parent = attachment
 	chosen.PlaybackSpeed = math.random(95,105)/100
-
 	chosen:Play()
 	Debris:AddItem(attachment, chosen.TimeLength > 0 and chosen.TimeLength + 0.5 or 2.5)
 
@@ -234,8 +220,8 @@ function ClientMain:playImpactSound(impactType, hitPosition, hitNormal)
 	end)
 end
 
--- Ricochet
 function ClientMain:ricochet(hitPosition, hitNormal, incomingVelocity)
+	if not incomingVelocity or incomingVelocity.Magnitude == 0 then return end
 	local inDir = incomingVelocity.Unit
 	local reflectDir = (inDir - (2 * inDir:Dot(hitNormal) * hitNormal)).Unit
 
@@ -263,7 +249,7 @@ function ClientMain:ricochet(hitPosition, hitNormal, incomingVelocity)
 		chosen.PlaybackSpeed = math.random(90,110)/100
 		chosen:Play()
 		Debris:AddItem(chosen, chosen.TimeLength > 0 and chosen.TimeLength or 2)
-		
+
 		pcall(function() 
 			ReplicateImpactSound:FireServer("Ricochet", hitPosition, hitNormal) 
 		end)
@@ -278,7 +264,7 @@ function ClientMain:ricochet(hitPosition, hitNormal, incomingVelocity)
 	local ricBehavior = Tracer.newBehavior(
 		self.config.TracerTemplate,
 		self.config.TracerContainer,
-		self.config.ProjectileAcceleration or Vector3.zero,
+		self.config.ProjectileAcceleration or Vector3.new(0,0,0),
 		params,
 		self.config.ProjectileMaxDistance or 3000
 	)
@@ -298,11 +284,8 @@ function ClientMain:ricochet(hitPosition, hitNormal, incomingVelocity)
 	end)
 end
 
--- FastCast ray hit
 function ClientMain:rayHit(cast, result, segmentVelocity, cosmeticBullet)
-	
 	if not self.toolEquipped then return end
-	
 	if not cast or not result then return end
 	if cast.UserData and cast.UserData.VisualOnly then return end
 
@@ -337,28 +320,22 @@ function ClientMain:rayHit(cast, result, segmentVelocity, cosmeticBullet)
 
 	-- duplicate guard
 	cast.UserData.HitHumanoids = cast.UserData.HitHumanoids or {}
-
-	if cast.UserData.HitHumanoids[hitHumanoid] then 
-		return 
-	end
-
+	if cast.UserData.HitHumanoids[hitHumanoid] then return end
 	cast.UserData.HitHumanoids[hitHumanoid] = true
 
 	-- flesh impact + server verify
 	self:playImpactSound("FleshImpact", result.Position, result.Normal)
 
 	pcall(function()
-		self.tool.VerifyHit:FireServer(hitHumanoid, hitPart, result.Position)
+		VerifyHitRemote:FireServer(self.tool, hitHumanoid, hitPart, result.Position)
 	end)
 
 	-- piercing behavior
 	if not self.config.HumanoidPierceEnabled then return end
-	
-	cast.UserData.PiercedHumanoids = (cast.UserData.PiercedHumanoids or 0) + 1
 
+	cast.UserData.PiercedHumanoids = (cast.UserData.PiercedHumanoids or 0) + 1
 	local limit = self.config.HumanoidPierceLimit or 0
 	if cast.UserData.PiercedHumanoids >= limit then
-		-- hard stop this projectile
 		pcall(function()
 			self.fastCast:Terminate(cast)
 		end)
@@ -373,7 +350,7 @@ function ClientMain:rayHit(cast, result, segmentVelocity, cosmeticBullet)
 	local newBehavior = Tracer.newBehavior(
 		self.config.TracerTemplate,
 		self.config.TracerContainer,
-		self.config.ProjectileAcceleration or Vector3.zero,
+		self.config.ProjectileAcceleration or Vector3.new(0,0,0),
 		params,
 		self.config.ProjectileMaxDistance or 3000
 	)
@@ -388,7 +365,6 @@ function ClientMain:rayHit(cast, result, segmentVelocity, cosmeticBullet)
 	end
 end
 
--- FastCast length changed
 function ClientMain:lengthChanged(cast, lastPoint, rayDir, displacement, segmentVelocity, cosmeticBullet)
 	if cosmeticBullet then
 		local pos = lastPoint + rayDir * displacement
@@ -396,32 +372,20 @@ function ClientMain:lengthChanged(cast, lastPoint, rayDir, displacement, segment
 		self.activeCosmeticBullets[cosmeticBullet] = true
 	end
 
-	if not self.config.SuppressionEnabled then
-		return 
-	end
-
-	if not cast or not cast.UserData or cast.UserData.Suppressed then 
-		return
-	end
+	if not self.config.SuppressionEnabled then return end
+	if not cast or not cast.UserData or cast.UserData.Suppressed then return end
 
 	local cam = workspace.CurrentCamera
-
 	if not cam then return end
 
 	local bulletPos = lastPoint + rayDir * displacement
-	if (bulletPos - cam.CFrame.Position).Magnitude > (self.config.SuppressionRadius or 12) then 
-		return
-	end
-
-	if cast.UserData.Owner == self.character then 
-		return
-	end
+	if (bulletPos - cam.CFrame.Position).Magnitude > (self.config.SuppressionRadius or 12) then return end
+	if cast.UserData.Owner == self.character then return end
 
 	cast.UserData.Suppressed = true
 	self:playSuppressionSound()
 end
 
--- Cast terminating cleanup
 function ClientMain:castTerminating(cast)
 	if cast and cast.RayInfo and cast.RayInfo.CosmeticBulletObject then
 		local bullet = cast.RayInfo.CosmeticBulletObject
@@ -430,7 +394,6 @@ function ClientMain:castTerminating(cast)
 	end
 end
 
--- Cleanup all cosmetic bullets
 function ClientMain:cleanupAllCosmeticBullets()
 	for bullet,_ in pairs(self.activeCosmeticBullets) do
 		if bullet and typeof(bullet) == "Instance" and bullet.Parent then
@@ -440,7 +403,6 @@ function ClientMain:cleanupAllCosmeticBullets()
 	self.activeCosmeticBullets = {}
 end
 
--- Fire
 function ClientMain:performChecksForFiring()
 	if not self.humanoid or self.humanoid.Health <= 0 then return false end
 	if self.ammo <= 0 or self.reloading then return false end
@@ -461,7 +423,7 @@ function ClientMain:fire()
 
 	for i = 1, (self.config.Pellets or 1) do
 		local spread = self.config.BulletSpread or 0
-		local cf = CFrame.new(Vector3.zero, direction)
+		local cf = CFrame.new(Vector3.new(0,0,0), direction)
 		local dir = (cf * CFrame.fromOrientation(0,0,self.RNG:NextNumber(0,self.TAU)) * CFrame.fromOrientation(math.rad(self.RNG:NextNumber(-spread,spread)), math.rad(self.RNG:NextNumber(-spread,spread)), 0)).LookVector
 
 		local cast = self.fastCast:Fire(origin, dir, self.bulletSpeed, self.behaviorTemplate)
@@ -478,26 +440,24 @@ function ClientMain:fire()
 		end)
 	end
 
-	local snd = self.fireSound:Clone()
-	snd.Parent = self.firingPoint
-	snd:Play()
-
-	pcall(function()
-		ReplicateSound:FireServer(snd.SoundId, snd.PlaybackSpeed)
-	end)
-
-	Debris:AddItem(snd, snd.TimeLength)
+	if self.fireSound then
+		local snd = self.fireSound:Clone()
+		snd.Parent = self.firingPoint
+		snd:Play()
+		pcall(function()
+			ReplicateSound:FireServer(snd.SoundId, snd.PlaybackSpeed)
+		end)
+		Debris:AddItem(snd, snd.TimeLength)
+	end
 
 	if self.fireAnimation then 
-		pcall(function() self.fireAnimation:Play()
-		end)
+		pcall(function() self.fireAnimation:Play() end)
 	end
 
 	self.ammo = math.max(0, self.ammo - 1)
 	self:refreshGui()
 end
 
--- Reload
 function ClientMain:reload()
 	if self.reloading then return end
 	if not self.toolEquipped then return end
@@ -505,24 +465,18 @@ function ClientMain:reload()
 
 	self.reloading = true
 
-	-- ENTIRE CLIP
 	if self.config.ReloadMethod == "EntireClip" then
-		if self.reloadAnimation then
-			pcall(function() self.reloadAnimation:Play() end)
-		end
-
+		if self.reloadAnimation then pcall(function() self.reloadAnimation:Play() end) end
 		if self.reloadSound then
 			local snd = self.reloadSound:Clone()
 			snd.Parent = self.firingPoint
 			snd:Play()
-			pcall(function()
-				ReplicateSound:FireServer(snd.SoundId, snd.PlaybackSpeed)
-			end)
+			pcall(function() ReplicateSound:FireServer(snd.SoundId, snd.PlaybackSpeed) end)
 			Debris:AddItem(snd, snd.TimeLength)
 		end
 
 		task.wait(self.config.ReloadSpeed or 3)
-		
+
 		if not self.toolEquipped then
 			self.reloading = false
 			return
@@ -537,13 +491,11 @@ function ClientMain:reload()
 	-- INDIVIDUAL
 	if self.config.ReloadMethod == "Individually" then
 		while self.ammo < self.magSize do
-			-- interruption checks
 			if not self.toolEquipped or self.humanoid.Health <= 0 then
 				self.reloading = false
 				return
 			end
 
-			-- animation
 			if self.reloadAnimation then
 				pcall(function()
 					self.reloadAnimation:Stop()
@@ -551,19 +503,16 @@ function ClientMain:reload()
 				end)
 			end
 
-			-- sound
 			if self.reloadSound then
 				local snd = self.reloadSound:Clone()
 				snd.Parent = self.firingPoint
 				snd:Play()
-				pcall(function()
-					ReplicateSound:FireServer(snd.SoundId, snd.PlaybackSpeed)
-				end)
+				pcall(function() ReplicateSound:FireServer(snd.SoundId, snd.PlaybackSpeed) end)
 				Debris:AddItem(snd, snd.TimeLength)
 			end
 
 			task.wait(self.config.ReloadSpeed or 0.4)
-			
+
 			if not self.toolEquipped then
 				self.reloading = false
 				return
@@ -573,18 +522,12 @@ function ClientMain:reload()
 			self:refreshGui()
 		end
 
-		-- FINISH
-		if self.reloadFinishAnimation then
-			pcall(function() self.reloadFinishAnimation:Play() end)
-		end
-
+		if self.reloadFinishAnimation then pcall(function() self.reloadFinishAnimation:Play() end) end
 		if self.reloadFinishSound then
 			local snd = self.reloadFinishSound:Clone()
 			snd.Parent = self.firingPoint
 			snd:Play()
-			pcall(function()
-				ReplicateSound:FireServer(snd.SoundId, snd.PlaybackSpeed)
-			end)
+			pcall(function() ReplicateSound:FireServer(snd.SoundId, snd.PlaybackSpeed) end)
 			Debris:AddItem(snd, snd.TimeLength)
 		end
 
@@ -592,11 +535,9 @@ function ClientMain:reload()
 	end
 end
 
--- Activation handlers used by mobile buttons
 function ClientMain:activated() self.mouseDown = true end
 function ClientMain:deactivated() self.mouseDown = false end
 
--- Render & heartbeat
 function ClientMain:renderStepped(dt)
 	if self.gui and not UserInputService.TouchEnabled then
 		local gm = self.gui:FindFirstChild("Mouse")
@@ -634,15 +575,13 @@ function ClientMain:killEvent(damage)
 	-- reserved for VerifyHit client event (kill feedback)
 end
 
--- Remote event handlers (replicated)
+-- Remote handlers
 function ClientMain:_onReplicateSound(player, soundId, playbackSpeed)
 	local character = player and player.Character
-
 	if not character then return end
 
 	local root = character:FindFirstChild("HumanoidRootPart") or character:FindFirstChildWhichIsA("BasePart") or workspace
 	local sound = Utils.createSound(root, soundId, nil, playbackSpeed)
-
 	Utils.waitForLoaded(sound)
 	sound:Play()
 	Debris:AddItem(sound, sound.TimeLength)
@@ -653,20 +592,17 @@ function ClientMain:_onReplicateBullet(ownerPlayer, origin, direction, speed, ne
 
 	local params = RaycastParams.new()
 	params.FilterType = Enum.RaycastFilterType.Exclude
-
 	local ignore = {}
 	if ownerPlayer and ownerPlayer.Character then 
 		table.insert(ignore, ownerPlayer.Character)
 	end
-
 	if self.config.TracerContainer then
 		table.insert(ignore, self.config.TracerContainer) 
 	end
 	params.FilterDescendantsInstances = ignore
 
-	local visualBehavior = Tracer.newBehavior(self.config.TracerTemplate, self.config.TracerContainer, self.config.ProjectileAcceleration or Vector3.zero, params, self.config.ProjectileMaxDistance or 3000)
+	local visualBehavior = Tracer.newBehavior(self.config.TracerTemplate, self.config.TracerContainer, self.config.ProjectileAcceleration or Vector3.new(0,0,0), params, self.config.ProjectileMaxDistance or 3000)
 	local cast = self.fastCast:Fire(origin, direction, speed, visualBehavior)
-
 	if cast then
 		cast.UserData = {
 			VisualOnly = true,
@@ -681,30 +617,25 @@ function ClientMain:_onReplicateImpactSound(impactType, hitPosition, hitNormal)
 
 	local fx = ReplicatedStorage:FindFirstChild("FX")
 	local impactFolder = fx and fx:FindFirstChild(impactType)
-
 	if not impactFolder and impactType == "FleshImpact" then
 		impactFolder = fx and fx:FindFirstChild("Impact")
 	end
-
 	if not impactFolder then return end
 
 	local impactSounds = {}
 	for _, child in ipairs(impactFolder:GetChildren()) do
 		if child:IsA("Sound") then table.insert(impactSounds, child) end
 	end
-
 	if #impactSounds == 0 then return end
 
 	local chosen = impactSounds[self.RNG:NextInteger(1,#impactSounds)]
 	local attachment = Instance.new("Attachment")
-
 	attachment.WorldPosition = hitPosition
 	attachment.WorldCFrame = CFrame.new(hitPosition, hitPosition + (hitNormal or Vector3.new(0,1,0)))
 	attachment.Parent = workspace.Terrain
 
 	local sound = chosen:Clone()
 	sound.Parent = attachment
-
 	sound.PlaybackSpeed = math.random(95,105)/100
 	sound.RollOffMode = Enum.RollOffMode.Linear
 	sound:Play()
@@ -724,17 +655,25 @@ function ClientMain:rebindAnimations()
 	self.reloadFinishAnimation = createAnim(self.config.ReloadFinishAnimation)
 end
 
--- Connect everything
 function ClientMain:connectAll()
 	-- FastCast events
 	table.insert(self._fastCastConns, self.fastCast.LengthChanged:Connect(function(...) self:lengthChanged(...) end))
 	table.insert(self._fastCastConns, self.fastCast.CastTerminating:Connect(function(...) self:castTerminating(...) end))
 	table.insert(self._fastCastConns, self.fastCast.RayHit:Connect(function(...) self:rayHit(...) end))
 
-	-- Remotes
+	-- Remotes (centralized)
 	table.insert(self._connections, ReplicateSound.OnClientEvent:Connect(function(...) self:_onReplicateSound(...) end))
 	table.insert(self._connections, ReplicateBullet.OnClientEvent:Connect(function(...) self:_onReplicateBullet(...) end))
 	table.insert(self._connections, ReplicateImpactSound.OnClientEvent:Connect(function(...) self:_onReplicateImpactSound(...) end))
+
+	-- VerifyHit outbound from server
+	table.insert(self._connections, VerifyHitRemote.OnClientEvent:Connect(function(...)
+		local args = {...}
+		local toolArg = args[1]
+		if toolArg ~= self.tool then return end
+		local damage = args[2]
+		self:killEvent(damage)
+	end))
 
 	-- Tool events
 	table.insert(self._connections, self.tool.Activated:Connect(function() self:activated() end))
@@ -747,60 +686,40 @@ function ClientMain:connectAll()
 	table.insert(self._connections, RunService.Heartbeat:Connect(function() self:heartbeat() end))
 	table.insert(self._connections, self.player.CharacterAdded:Connect(function(ch) self:handleRespawn(ch) end))
 
-	-- VerifyHit client
-	if self.tool:FindFirstChild("VerifyHit") and self.tool.VerifyHit:IsA("RemoteEvent") then
-		table.insert(self._connections, self.tool.VerifyHit.OnClientEvent:Connect(function(damage) self:killEvent(damage) end))
-	end
-
-	-- Bind key input handler (always active, but checks toolEquipped)
 	self.keybindHandler:bindActions()
 end
 
--- Disconnect everything
 function ClientMain:disconnectAll()
 	-- fastCast conns
 	for _,c in ipairs(self._fastCastConns) do
-		if c and c.Disconnect then pcall(function() c:Disconnect() end) end
+		if c then pcall(function() c:Disconnect() end) end
 	end
 	self._fastCastConns = {}
 
 	-- normal conns
 	for _,c in ipairs(self._connections) do
-		if c and c.Disconnect then pcall(function() c:Disconnect() end) end
+		if c then pcall(function() c:Disconnect() end) end
 	end
 	self._connections = {}
 
 	-- input handlers
-	self.keybindHandler:unbindActions()
-	self.mobileHandler:unbindActions()
+	if self.keybindHandler then self.keybindHandler:unbindActions() end
+	if self.mobileHandler then self.mobileHandler:unbindActions() end
 end
 
--- Equip/Unequip
 function ClientMain:equipped()
 	self.toolEquipped = true
-	
-	self.mobileHandler:unbindActions()
-	
-	if self.gui then
-		pcall(function() self.gui:Destroy() end)
-		self.gui = nil
-	end
+	if self.mobileHandler then self.mobileHandler:unbindActions() end
 
-	-- mobile buttons only bind while equipped
-	if UserInputService.TouchEnabled then
+	if self.gui then pcall(function() self.gui:Destroy() end) end
+	self.gui = nil
+
+	if UserInputService.TouchEnabled and self.mobileHandler then
 		self.mobileHandler:bindActions()
 	end
 
-	-- animations & GUI
-	if self.equipAnimation then
-		pcall(function() self.equipAnimation:Play()
-		end) 
-	end
-
-	if self.idleAnimation then 
-		pcall(function() self.idleAnimation:Play()
-		end) 
-	end
+	if self.equipAnimation then pcall(function() self.equipAnimation:Play() end) end
+	if self.idleAnimation then pcall(function() self.idleAnimation:Play() end) end
 
 	self.gui = self.guiTemplate and self.guiTemplate:Clone()
 	if self.gui then
@@ -809,7 +728,6 @@ function ClientMain:equipped()
 	end
 	self:refreshGui()
 
-	-- hide system cursor while equipped
 	UserInputService.MouseIconEnabled = false
 end
 
@@ -817,17 +735,14 @@ function ClientMain:unequipped()
 	self.mouseDown = false
 	self.toolEquipped = false
 
-	-- unbind mobile UI/buttons when unequipped
-	self.mobileHandler:unbindActions()
-
+	if self.mobileHandler then self.mobileHandler:unbindActions() end
 	if self.idleAnimation then pcall(function() self.idleAnimation:Stop() end) end
 	UserInputService.MouseIconEnabled = true
 	self:scopeOut()
 
-	-- cleanup
 	self:cleanupAllCosmeticBullets()
 	if self.fastCast and self.fastCast.TerminateAll then pcall(function() self.fastCast:TerminateAll() end) end
-	
+
 	for _,anim in ipairs({
 		self.equipAnimation,
 		self.idleAnimation,
@@ -838,54 +753,49 @@ function ClientMain:unequipped()
 		if anim then pcall(function() anim:Stop() end) end
 	end
 
-	if self.gui then
-		pcall(function() self.gui:Destroy() end)
-		self.gui = nil
-	end
+	if self.gui then pcall(function() self.gui:Destroy() end) end
+	self.gui = nil
 end
 
--- Respawn handling
 function ClientMain:handleRespawn(newCharacter)
 	wait(0.1)
-	
 	self:unequipped()
 	self:cleanupAllCosmeticBullets()
-	
+
 	if self.fastCast and self.fastCast.TerminateAll then pcall(function() self.fastCast:TerminateAll() end) end
-	
+
 	self.behaviorTemplate.RaycastParams = self:_makeBulletParams()
-	
+
 	local ok = pcall(function()
 		self.character = newCharacter
 		self.humanoid = self.character:WaitForChild("Humanoid", 2)
 		self.root = self.character:WaitForChild("HumanoidRootPart", 2)
 	end)
-	
+
 	if not ok then
 		wait(0.5)
-		self.character = newCharacter
-		if self.character then
+		if newCharacter then
+			self.character = newCharacter
 			self.humanoid = self.character:WaitForChild("Humanoid")
 			self.root = self.character:WaitForChild("HumanoidRootPart")
 		end
 	end
-	
-	if self._humanoidDiedConn then
-		pcall(function() self._humanoidDiedConn:Disconnect() end)
+
+	if self._humanoidDiedConn then pcall(function() self._humanoidDiedConn:Disconnect() end) end
+
+	if self.humanoid then
+		self._humanoidDiedConn = self.humanoid.Died:Connect(function()
+			self:unequipped()
+		end)
 	end
 
-	self._humanoidDiedConn = self.humanoid.Died:Connect(function()
-		self:unequipped()
-	end)
-	
 	self:rebindAnimations()
-	
 	self:refreshEnemiesAndTeammates()
-	
+
 	self.mouseDown = false
 	self.reloading = false
 	self.lastFired = 0
-	
+
 	if self.toolEquipped then
 		wait(0.5)
 		if self.tool and self.tool.Parent == self.character then
@@ -894,13 +804,10 @@ function ClientMain:handleRespawn(newCharacter)
 	end
 end
 
--- Public init
 function ClientMain.init(tool, player)
 	local instance = ClientMain.new(tool, player)
 	instance:refreshEnemiesAndTeammates()
 	instance:connectAll()
-
-	-- ensure unequipped default state
 	instance:unequipped()
 	return instance
 end

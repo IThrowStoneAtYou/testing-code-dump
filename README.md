@@ -1,0 +1,30 @@
+just code dump for a stupid game.
+
+raw github:
+
+ToolRegister.luau:
+https://raw.githubusercontent.com/IThrowStoneAtYou/testing-code-dump/refs/heads/main/ToolRegister.luau
+
+ToolClientLauncher.luau:
+https://raw.githubusercontent.com/IThrowStoneAtYou/testing-code-dump/refs/heads/main/ToolClientLauncher.luau
+
+Utils modules.luau:
+https://raw.githubusercontent.com/IThrowStoneAtYou/testing-code-dump/refs/heads/main/Modules/Utils%20modules.luau
+
+ServerMain Modules.luau:
+https://raw.githubusercontent.com/IThrowStoneAtYou/testing-code-dump/refs/heads/main/Modules/ServerMain%20Modules.luau
+
+ClientMain Modules.luau:
+https://raw.githubusercontent.com/IThrowStoneAtYou/testing-code-dump/refs/heads/main/Modules/ClientMain%20Modules.luau
+
+Rigging modules.luau:
+https://raw.githubusercontent.com/IThrowStoneAtYou/testing-code-dump/refs/heads/main/Modules/Rigging%20modules.luau
+
+ClientMobileHandler.luau:
+https://raw.githubusercontent.com/IThrowStoneAtYou/testing-code-dump/refs/heads/main/Modules/ClientMobileHandler.luau
+
+ClientKeybindHandler.luau:
+https://raw.githubusercontent.com/IThrowStoneAtYou/testing-code-dump/refs/heads/main/Modules/ClientKeybindHandler.luau
+
+Tracer module (client).luau:
+https://raw.githubusercontent.com/IThrowStoneAtYou/testing-code-dump/refs/heads/main/Modules/Client/Tracer%20module%20(client).luau

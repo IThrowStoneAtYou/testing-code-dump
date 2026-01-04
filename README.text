@@ -1,4 +1,12 @@
 hi, this is just some old code backup thing, and just dont fuck em please.
 
 SSS = ServerScriptService
+
+RS = ReplicatedStorage
+
+SS = ServerStorage
+
+SG = StarterGui
+
 SCP = StarterCharacterScripts
+SPS = StarterPlayerScripts

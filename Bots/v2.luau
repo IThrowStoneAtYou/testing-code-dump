@@ -10,35 +10,30 @@ local SPACING_X = 4
 local SPACING_Z = 5
 
 local POSITION_EPSILON = 0.5
-local ROTATION_EPSILON = 0.02
+local ANGLE_EPSILON = math.rad(2)
 
-local FOLLOW_UPDATE_RATE = 0.1 -- seconds (updates/sec)
+local FOLLOW_UPDATE_RATE = 0.1
 local followAccumulator = 0
 
 local MAX_UNITS = 100
 
+-- COLLISION GROUPS
 local function setupCollisionGroups()
-	local success, err
-
-	success, err = pcall(function()
+	pcall(function()
 		PhysicsService:CreateCollisionGroup("Soldiers")
 	end)
 
-	success, err = pcall(function()
+	pcall(function()
 		PhysicsService:CreateCollisionGroup("Players")
 	end)
 
-	-- Soldiers do NOT collide with Soldiers
 	PhysicsService:CollisionGroupSetCollidable("Soldiers", "Soldiers", false)
-
-	-- Soldiers do NOT collide with Players
 	PhysicsService:CollisionGroupSetCollidable("Soldiers", "Players", false)
 end
 
 setupCollisionGroups()
 
-
--- data
+-- DATA
 local PlayerData = {}
 
 local function getData(player)
@@ -49,21 +44,29 @@ local function getData(player)
 			ranks = 1,
 			lastPos = nil,
 			lastLook = nil,
-			spawned = false
 		}
 	end
 	return PlayerData[player]
 end
 
+-- CLEANUP
+local function clearUnits(data)
+	for _, unit in ipairs(data.units) do
+		if unit and unit.Parent then
+			unit:Destroy()
+		end
+	end
+	data.units = {}
+end
 
 -- SPAWN
 local function spawnUnits(player, amount)
 	local data = getData(player)
-	if data.spawned then return end
+
+	clearUnits(data)
 
 	local char = player.Character
 	if not char or not char:FindFirstChild("HumanoidRootPart") then return end
-
 	local root = char.HumanoidRootPart
 
 	for i = 1, amount do
@@ -78,61 +81,35 @@ local function spawnUnits(player, amount)
 		end
 
 		unit.PrimaryPart:SetNetworkOwner(nil)
-		unit:SetAttribute("MoveVersion", 0)
+		unit:SetAttribute("LastTarget", nil)
+
 		table.insert(data.units, unit)
 	end
-	
-	data.spawned = true
 end
 
-local function resetUnits(player)
-	local data = getData(player)
-
-	for _, unit in ipairs(data.units) do
-		if unit and unit.Parent then
-			unit:Destroy()
-		end
-	end
-
-	data.units = {}
-	data.following = false
-	data.ranks = 1
-	data.lastPos = nil
-	data.lastLook = nil
-	data.spawned = false
-end
-
+-- MOVE (THREADS)
 local function moveUnit(unit, targetPos)
 	local humanoid = unit:FindFirstChildOfClass("Humanoid")
 	local root = unit.PrimaryPart
 	if not humanoid or not root then return end
 
+	local lastTarget = unit:GetAttribute("LastTarget")
+	if lastTarget then
+		if (lastTarget - targetPos).Magnitude < 0.25 then
+			return
+		end
+	end
+
+	unit:SetAttribute("LastTarget", targetPos)
+
 	local dist = (root.Position - targetPos).Magnitude
 	if dist < 0.75 then return end
 
-	-- increment version
-	local version = (unit:GetAttribute("MoveVersion") or 0) + 1
-	unit:SetAttribute("MoveVersion", version)
-
-	-- speed up stragglers
 	humanoid.WalkSpeed = dist > 20 and 20 or 18
 	humanoid:MoveTo(targetPos)
-
-	task.spawn(function()
-		local reached = humanoid.MoveToFinished:Wait()
-
-		-- ignore stale commands
-		if unit:GetAttribute("MoveVersion") ~= version then
-			return
-		end
-
-		if not reached then
-			humanoid:MoveTo(targetPos)
-		end
-	end)
 end
 
--- FORMATION CALC 
+-- FORMATION
 local function applyLineFormation(player)
 	local data = getData(player)
 	local units = data.units
@@ -160,23 +137,27 @@ local function applyLineFormation(player)
 			origin
 			+ right * xOffset
 		- forward * zOffset
-		
-		local hrp = unit.PrimaryPart
-		if hrp and (hrp.Position - targetPos).Magnitude > 0.75 then
-			moveUnit(unit, targetPos)
-		end
+
+		moveUnit(unit, targetPos)
 	end
 end
 
-local function setCharacterCollision(character)
+-- CHARACTER COLLISION
+local function onCharacterAdded(player, character)
 	for _, part in ipairs(character:GetDescendants()) do
 		if part:IsA("BasePart") then
 			PhysicsService:SetPartCollisionGroup(part, "Players")
 		end
 	end
+
+	-- FORCE HALT ON RESPAWN
+	local data = getData(player)
+	data.following = false
+	data.lastPos = nil
+	data.lastLook = nil
 end
 
--- HEARTBEAT FOLLOW UPDATE
+-- HEARTBEAT FOLLOW
 RunService.Heartbeat:Connect(function(dt)
 	followAccumulator += dt
 	if followAccumulator < FOLLOW_UPDATE_RATE then return end
@@ -198,7 +179,12 @@ RunService.Heartbeat:Connect(function(dt)
 			moved = true
 		end
 
-		if not data.lastLook or (look - data.lastLook).Magnitude > ROTATION_EPSILON then
+		if data.lastLook then
+			local angle = math.acos(math.clamp(data.lastLook:Dot(look), -1, 1))
+			if angle > ANGLE_EPSILON then
+				moved = true
+			end
+		else
 			moved = true
 		end
 
@@ -210,17 +196,18 @@ RunService.Heartbeat:Connect(function(dt)
 	end
 end)
 
--- CHAT COMMANDS
+-- COMMANDS
 Players.PlayerAdded:Connect(function(player)
 	player.CharacterAdded:Connect(function(character)
-		setCharacterCollision(character)
+		onCharacterAdded(player, character)
 	end)
-	
+
 	player.Chatted:Connect(function(msg)
 		if msg:sub(1,1) ~= "/" then return end
 
 		local args = string.split(msg, " ")
 		local cmd = args[1]:lower()
+		local data = getData(player)
 
 		if cmd == "/spawn" then
 			local count = tonumber(args[2])
@@ -231,32 +218,33 @@ Players.PlayerAdded:Connect(function(player)
 		elseif cmd == "/line" then
 			local ranks = tonumber(args[2])
 			if ranks and ranks >= 1 then
-				local data = getData(player)
-				
 				data.ranks = math.floor(ranks)
 				data.lastPos = nil
 				data.lastLook = nil
-				
 				applyLineFormation(player)
 			end
 
 		elseif cmd == "/follow" then
-			local data = getData(player)
 			data.following = true
 			data.lastPos = nil
 			data.lastLook = nil
 
 		elseif cmd == "/halt" then
-			--	setFollow(player, false) -- it fucking broke-
-			local data = getData(player)
 			data.following = false
-		
+
 		elseif cmd == "/reset" then
-			resetUnits(player)
+			clearUnits(data)
+			data.following = false
+			data.lastPos = nil
+			data.lastLook = nil
 		end
 	end)
 end)
 
 Players.PlayerRemoving:Connect(function(player)
+	local data = PlayerData[player]
+	if data then
+		clearUnits(data)
+	end
 	PlayerData[player] = nil
 end)

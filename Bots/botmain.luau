@@ -5,9 +5,8 @@ local PhysicsService = game:GetService("PhysicsService")
 
 local SOLDIER_MODEL = ServerStorage:WaitForChild("Soldier")
 
--- formation tuning
-local SPACING_X = 4
-local SPACING_Z = 5
+local SPACING_X = 4.5
+local SPACING_Z = 5.5
 
 local POSITION_EPSILON = 0.5
 local ANGLE_EPSILON = math.rad(2)
@@ -21,10 +20,12 @@ local MAX_UNITS = 100
 local function setupCollisionGroups()
 	pcall(function()
 		PhysicsService:CreateCollisionGroup("Soldiers")
+		print("[Collision] Created Soldiers group")
 	end)
 
 	pcall(function()
 		PhysicsService:CreateCollisionGroup("Players")
+		print("[Collision] Created Players group")
 	end)
 
 	PhysicsService:CollisionGroupSetCollidable("Soldiers", "Soldiers", false)
@@ -45,14 +46,15 @@ local function getData(player)
 			lastPos = nil,
 			lastLook = nil,
 		}
+		print("[Data] Init data for", player.Name)
 	end
 	return PlayerData[player]
 end
 
--- CLEANUP
 local function clearUnits(data)
 	for _, unit in ipairs(data.units) do
 		if unit and unit.Parent then
+			print("[Units] Destroy", unit.Name)
 			unit:Destroy()
 		end
 	end
@@ -63,15 +65,21 @@ end
 local function spawnUnits(player, amount)
 	local data = getData(player)
 
+	print("[Spawn] Spawning", amount, "units for", player.Name)
 	clearUnits(data)
 
 	local char = player.Character
-	if not char or not char:FindFirstChild("HumanoidRootPart") then return end
+	if not char or not char:FindFirstChild("HumanoidRootPart") then
+		print("[Spawn] No character/root")
+		return
+	end
+
 	local root = char.HumanoidRootPart
 
 	for i = 1, amount do
 		local unit = SOLDIER_MODEL:Clone()
 		unit.Parent = workspace
+		unit.Name = "Soldier_" .. player.Name .. "_" .. i
 		unit:PivotTo(root.CFrame * CFrame.new(0, 0, -10))
 
 		for _, part in ipairs(unit:GetDescendants()) do
@@ -87,17 +95,15 @@ local function spawnUnits(player, amount)
 	end
 end
 
--- MOVE (THREADS)
+-- MOVE 
 local function moveUnit(unit, targetPos)
 	local humanoid = unit:FindFirstChildOfClass("Humanoid")
 	local root = unit.PrimaryPart
 	if not humanoid or not root then return end
 
 	local lastTarget = unit:GetAttribute("LastTarget")
-	if lastTarget then
-		if (lastTarget - targetPos).Magnitude < 0.25 then
-			return
-		end
+	if lastTarget and (lastTarget - targetPos).Magnitude < 0.25 then
+		return
 	end
 
 	unit:SetAttribute("LastTarget", targetPos)
@@ -107,13 +113,14 @@ local function moveUnit(unit, targetPos)
 
 	humanoid.WalkSpeed = dist > 20 and 20 or 18
 	humanoid:MoveTo(targetPos)
+
+--	print("[Move]", unit.Name, "To", targetPos) --// holy spam
 end
 
 -- FORMATION
 local function applyLineFormation(player)
 	local data = getData(player)
-	local units = data.units
-	if #units == 0 then return end
+	if #data.units == 0 then return end
 
 	local char = player.Character
 	if not char or not char:FindFirstChild("HumanoidRootPart") then return end
@@ -124,9 +131,9 @@ local function applyLineFormation(player)
 	local forward = root.CFrame.LookVector
 
 	local ranks = math.max(1, data.ranks)
-	local unitsPerRank = math.ceil(#units / ranks)
+	local unitsPerRank = math.ceil(#data.units / ranks)
 
-	for index, unit in ipairs(units) do
+	for index, unit in ipairs(data.units) do
 		local rank = math.floor((index - 1) / unitsPerRank)
 		local file = (index - 1) % unitsPerRank
 
@@ -142,22 +149,23 @@ local function applyLineFormation(player)
 	end
 end
 
--- CHARACTER COLLISION
+-- CHARACTER HANDLING
 local function onCharacterAdded(player, character)
+	print("[Character] Added for", player.Name)
+
 	for _, part in ipairs(character:GetDescendants()) do
 		if part:IsA("BasePart") then
 			PhysicsService:SetPartCollisionGroup(part, "Players")
 		end
 	end
 
-	-- FORCE HALT ON RESPAWN
 	local data = getData(player)
 	data.following = false
 	data.lastPos = nil
 	data.lastLook = nil
 end
 
--- HEARTBEAT FOLLOW
+-- FOLLOW LOOP
 RunService.Heartbeat:Connect(function(dt)
 	followAccumulator += dt
 	if followAccumulator < FOLLOW_UPDATE_RATE then return end
@@ -189,6 +197,7 @@ RunService.Heartbeat:Connect(function(dt)
 		end
 
 		if moved then
+			print("[Follow] Update formation for", player.Name)
 			data.lastPos = pos
 			data.lastLook = look
 			applyLineFormation(player)
@@ -203,8 +212,6 @@ Players.PlayerAdded:Connect(function(player)
 	end)
 
 	player.Chatted:Connect(function(msg)
-		if msg:sub(1,1) ~= "/" then return end
-
 		local args = string.split(msg, " ")
 		local cmd = args[1]:lower()
 		local data = getData(player)
@@ -217,31 +224,34 @@ Players.PlayerAdded:Connect(function(player)
 
 		elseif cmd == "/line" then
 			local ranks = tonumber(args[2])
-			if ranks and ranks >= 1 then
-				data.ranks = math.floor(ranks)
+			if ranks then
+				data.ranks = math.max(1, math.floor(ranks))
 				data.lastPos = nil
 				data.lastLook = nil
+				print("[Command] Line ranks =", data.ranks)
 				applyLineFormation(player)
 			end
 
 		elseif cmd == "/follow" then
+			print("[Command] Follow ON")
 			data.following = true
 			data.lastPos = nil
 			data.lastLook = nil
 
 		elseif cmd == "/halt" then
+			print("[Command] Follow OFF")
 			data.following = false
 
 		elseif cmd == "/reset" then
+			print("[Command] Reset units")
 			clearUnits(data)
 			data.following = false
-			data.lastPos = nil
-			data.lastLook = nil
 		end
 	end)
 end)
 
 Players.PlayerRemoving:Connect(function(player)
+	print("[Cleanup] Player removing", player.Name)
 	local data = PlayerData[player]
 	if data then
 		clearUnits(data)

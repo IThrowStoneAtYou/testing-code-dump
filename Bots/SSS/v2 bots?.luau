@@ -258,6 +258,9 @@ end
 
 -- commands
 
+-- this table prevents overlapping gap repair threads
+local gaplocks = {}
+
 local function onchatted(player, msg)
 	local args = string.split(string.lower(msg), " ")
 	local company = companies[player]
@@ -305,7 +308,16 @@ local function onchatted(player, msg)
 	end
 
 	if args[1] == "/gaps" and company then
-		fillgaps(company)
+		if not gaplocks[player] then
+			gaplocks[player] = true
+			print("gap thread started for", player.Name)
+
+			task.spawn(function()
+				fillgaps(company)
+				gaplocks[player] = false
+				print("gap thread finished for", player.Name)
+			end)
+		end
 	end
 
 	if args[1] == "/follow" and company then
@@ -314,7 +326,7 @@ local function onchatted(player, msg)
 	end
 
 	if args[1] == "/unfollow" and company then
-		print("company anchored")
+		print("company unfollow")
 		company.follow = false
 		company.anchor = player.Character.HumanoidRootPart.CFrame
 	end
@@ -330,30 +342,32 @@ players.PlayerAdded:Connect(function(player)
 	player.CharacterAdded:Connect(function(char)
 		for _, p in ipairs(char:GetDescendants()) do
 			setmodelcollision(char, "player")
-			print("player collision applied")
+			print("player CharacterAdded collision applied")
 		end
 
 		char.DescendantAdded:Connect(function(obj)
 			if obj:IsA("BasePart") then
 				obj.CollisionGroup = "player"
+				print("player DescendantAdded collision applied")
 			end
 		end)
 
 		char:WaitForChild("Humanoid").Died:Connect(function()
 			destroycompany(player)
+			print("died...")
 		end)
 	end)
 end)
 
 -- formation loop
 
-local acc = 0
-runservice.Heartbeat:Connect(function(dt)
-	acc += dt
-	if acc >= formationrate then
-		acc = 0
+task.spawn(function()
+	print("formation scheduler started")
+
+	while true do
 		for player, _ in pairs(companies) do
 			updateformation(player)
 		end
+		task.wait(formationrate)
 	end
 end)

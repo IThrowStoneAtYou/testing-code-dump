@@ -1,18 +1,29 @@
--- company_controller
+-- bot server script
 
 local players = game:GetService("Players")
 local replicatedstorage = game:GetService("ReplicatedStorage")
 local physics = game:GetService("PhysicsService")
 local workspace = workspace
 
-local musket = require(script:WaitForChild("musket_module")) -- ensure these ModuleScripts are sibling children
+local musket = require(script:WaitForChild("musket_module"))
 local formation = require(script:WaitForChild("formation_module"))
 local manager = require(script:WaitForChild("company_manager"))
 
-print("company_controller started")
+
+local Cmdr = require(replicatedstorage.Cmdr)
+
+Cmdr:RegisterDefaultCommands()
+Cmdr:RegisterHooksIn(replicatedstorage.Cmdr.Hooks)
+
+
+print("game started")
 
 -- formation settings
-local spacing = { side = 5.8, front = 6.8, back = 10 }
+local spacing = { side = 5.8,
+				  front = 6, 
+				  back = 10 
+}
+
 local formationrate = 0.12
 local stoptolerance = 1.5
 

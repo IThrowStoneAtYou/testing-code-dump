@@ -1,4 +1,4 @@
--- formation_module
+-- formation_module (modules)
 -- formation geometry, file ordering, slot packing and gap filling utilities
 local module = {}
 

@@ -1,5 +1,4 @@
--- company_manager
--- handles creating/destroying companies and soldier spawning; uses musket_module and formation_module
+-- company_manager (modules)
 local module = {}
 
 local physics = game:GetService("PhysicsService")
@@ -141,13 +140,17 @@ function module.destroy_company(player)
 	companies[player] = nil
 end
 
+local max_bots_per_player = 165 --fucyou
+
 -- spawn company: creates folder and spawns bots in center-out order
 function module.spawn_company(player, count)
 	-- create per-player company folder, spawn bots in center-out file order, initialize musket state
 	print("company_manager.spawn_company called", player.Name, count)
 	if companies[player] then return end
 	if not player.Character or not player.Character:FindFirstChild("HumanoidRootPart") then return end
-
+	
+	count = math.clamp(count or 0, 1, max_bots_per_player)
+	
 	local companyfolder = Instance.new("Folder")
 	companyfolder.Name = player.Name .. "_company"
 	companyfolder.Parent = companiesfolder

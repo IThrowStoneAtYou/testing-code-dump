@@ -17,7 +17,6 @@ local sfx = replicatedstorage:WaitForChild("Asset")
 	:WaitForChild("musket")
 	:WaitForChild("fire")
 
-
 local animids = {
 	idle = anim_folder:WaitForChild("Idle"),
 	make_ready = anim_folder:WaitForChild("MakeReady"),
@@ -29,10 +28,10 @@ local animids = {
 	reload_idle = anim_folder:WaitForChild("ReloadIdle"),
 }
 
--- weak....
+-- weak table to store per-bot runtime data (tracks, conns)
 local musket_data = setmetatable({}, { __mode = "k" })
 
--- animator getter
+-- get_animator: return animator for bot humanoid, create if missing
 local function get_animator(bot)
 	local hum = bot:FindFirstChildWhichIsA("Humanoid")
 	if not hum then return nil end
@@ -44,7 +43,7 @@ local function get_animator(bot)
 	return animator
 end
 
--- stop all current animations and connections
+-- stop_all: stop any playing animation and disconnect trackers for the bot
 function module.stop_all(bot)
 	local data = musket_data[bot]
 	if not data then return end
@@ -58,7 +57,7 @@ function module.stop_all(bot)
 	end
 end
 
--- play animation helper
+-- play_anim: helper to play an animation and register onend callback
 local function play_anim(bot, anim, looped, onend)
 	local animator = get_animator(bot)
 	if not animator then return end
@@ -83,7 +82,7 @@ local function play_anim(bot, anim, looped, onend)
 	end
 end
 
--- initialize musket attributes
+-- init: initialize musket attributes for the bot
 function module.init(bot)
 	if bot:GetAttribute("musket_state") == nil then bot:SetAttribute("musket_state","idle") end
 	if bot:GetAttribute("has_bullet") == nil then bot:SetAttribute("has_bullet",true) end
@@ -95,48 +94,40 @@ local gravity = 196.2           -- roblox gravity
 local max_lifetime = 9          -- seconds
 local step_rate = 1 / 120       -- simulation step
 
+-- get_muzzle: return muzzle world position and look vector
 local function get_muzzle(bot)
---	print("get_muzzle called")
-
 	local Musket = bot:FindFirstChild("Musket")
-
+	if not Musket then return end
 	local muzzle = Musket:FindFirstChild("Muzzle", true)
 	if not muzzle then return end
-
 	if muzzle:IsA("Attachment") then
 		return muzzle.WorldPosition, muzzle.WorldCFrame.LookVector
 	end
-
 	if muzzle:IsA("BasePart") then
 		return muzzle.Position, muzzle.CFrame.LookVector
 	end
 end
 
+-- play_fire_sound: local fire sfx at muzzle
 local function play_fire_sound(bot)
-	print("play_fire_sound called")
-
+--	print("play_fire_sound called")
 	local origin, _ = get_muzzle(bot)
 	if not origin then return end
-
 	local Musket = bot:FindFirstChild("Musket")
-
+	if not Musket then return end
 	local muzzle = Musket:FindFirstChild("Muzzle", true)
-	
+	if not muzzle then return end
 	local sounds = sfx:GetChildren()
 	if #sounds == 0 then return end
-
 	local sound = sounds[math.random(1,#sounds)]:Clone()
 	sound.Parent = muzzle
 	sound:Play()
-
-	sound.Ended:Connect(function()
-		sound:Destroy()
-	end)
+	sound.Ended:Connect(function() sound:Destroy() end)
 end
 
+-- simulate_bullet: spawn a tracer and raycast forward, apply damage to opposite-team humanoids
 local function simulate_bullet(bot)
-	print("simulate_bullet called")
-
+--	print("simulate_bullet called")
 	local origin, dir = get_muzzle(bot)
 	if not origin then return end
 
@@ -162,7 +153,7 @@ local function simulate_bullet(bot)
 			local dt = step_rate
 			life += dt
 
-			-- gravity drop
+			-- gravity drop (optional)
 			velocity += Vector3.new(0, 0, 0) * dt
 
 			local nextpos = position + velocity * dt
@@ -201,15 +192,16 @@ local function simulate_bullet(bot)
 	end)
 end
 
--- set idle animation
+-- set_idle: set idle animation and state
 function module.set_idle(bot)
 	module.stop_all(bot)
 	bot:SetAttribute("musket_state","idle")
 	play_anim(bot, animids.idle, true)
 end
 
--- present musket
+-- present: play make ready -> idle
 function module.present(bot)
+	-- only transition from idle
 	if bot:GetAttribute("musket_state") ~= "idle" then return end
 	bot:SetAttribute("musket_state","makeready")
 	play_anim(bot, animids.make_ready,false,function()
@@ -218,8 +210,9 @@ function module.present(bot)
 	end)
 end
 
--- aim musket
+-- aim: play to_aim -> aim idle
 function module.aim(bot)
+	-- only transition from makereadyidle
 	if bot:GetAttribute("musket_state") ~= "makereadyidle" then return end
 	bot:SetAttribute("musket_state","toaim")
 	play_anim(bot, animids.to_aim,false,function()
@@ -228,16 +221,15 @@ function module.aim(bot)
 	end)
 end
 
--- fire musket
+-- fire: simulate shot and transition to reload idle
 function module.fire(bot)
---	print("musket.fire called")
-
+	-- only allowed from aimidle and must have bullet
 	if bot:GetAttribute("musket_state") ~= "aimidle" then return end
 	if bot:GetAttribute("has_bullet") ~= true then return end
 
 	bot:SetAttribute("has_bullet", false)
 	bot:SetAttribute("musket_state", "fire")
-	
+
 	play_fire_sound(bot)
 	simulate_bullet(bot)
 
@@ -247,8 +239,9 @@ function module.fire(bot)
 	end)
 end
 
--- reload musket
+-- reload: play reload then set has_bullet true and idle
 function module.reload(bot)
+	-- only allowed from reloadidle and when actually out of bullet
 	if bot:GetAttribute("musket_state") ~= "reloadidle" then return end
 	if bot:GetAttribute("has_bullet") == true then return end
 	bot:SetAttribute("musket_state","reloading")
@@ -258,7 +251,7 @@ function module.reload(bot)
 	end)
 end
 
--- cease musket actions
+-- cease: stop actions and set appropriate idle state depending on has_bullet
 function module.cease(bot)
 	module.stop_all(bot)
 	if bot:GetAttribute("has_bullet") == true then
@@ -269,5 +262,8 @@ function module.cease(bot)
 		play_anim(bot, animids.reload_idle,true)
 	end
 end
+
+-- stop_all exposed
+module.stop_all = module.stop_all
 
 return module

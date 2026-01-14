@@ -2,7 +2,7 @@
 -- formation geometry, file ordering, slot packing and gap filling utilities
 local module = {}
 
--- build a file order centered (center, right, left, right2, left2...)
+-- build_file_order: return file ordering centered (center, right, left, right2, left2...)
 function module.build_file_order(columns)
 	-- return file ordering centered
 --	print("formation_module.build_file_order called", columns)
@@ -29,9 +29,7 @@ function module.rebuiltslots(company)
 	local pool = {}
 	for i = 1, company.maxslots do
 		local bot = company.slots[i]
-		if bot and bot ~= false then
-			table.insert(pool, bot)
-		end
+		if bot and bot ~= false then table.insert(pool, bot) end
 	end
 
 	local newslots = {}
@@ -59,7 +57,7 @@ end
 -- fillgaps: compress slots forward within each file (rear ranks move forward)
 function module.fillgaps(company)
 	-- compress slots forward within each file so rear ranks fill holes
---	print("formation_module.fillgaps called")
+	print("formation_module.fillgaps called")
 	local rows = company.rows
 	local columns = math.ceil(company.maxslots / rows)
 	local slots = company.slots
@@ -87,7 +85,7 @@ function module.fillgaps(company)
 	end
 end
 
--- check if a bot is in front rank (first row)
+-- is_front_rank: check if a bot is in front rank (first row)
 function module.is_front_rank(company, bot)
 	-- check if bot slot is in front rank relative to company's rows/columns
 	if not company or not bot then return false end
@@ -97,12 +95,13 @@ function module.is_front_rank(company, bot)
 	return slot <= columns
 end
 
--- update formation: move bots to their anchored positions
+-- update_formation: move bots to their anchored positions, use speed boost when far
 function module.update_formation(company, anchor_cframe, spacing, stoptolerance)
-	-- move each bot to calculated slot position relative to anchor
---	print("formation_module.update_formation called") -- ts just spamming alot
+	-- move each bot to calculated slot position relative to anchor and apply distance-based speed boost
+--	print("formation_module.update_formation called")
 	if not company then return end
 	local columns = math.ceil(company.maxslots / company.rows)
+
 	for slot = 1, company.maxslots do
 		local bot = company.slots[slot]
 		if bot and bot ~= false then
@@ -121,12 +120,23 @@ function module.update_formation(company, anchor_cframe, spacing, stoptolerance)
 				local target = cf.Position
 				local dist = (root.Position - target).Magnitude
 
+				-- movement with speed boost if far from slot
 				if dist > stoptolerance then
+					-- very far -> sprint, medium -> jog, close -> normal
+					if dist > 25 then
+						pcall(function() humanoid.WalkSpeed = 26 end)
+					elseif dist > 12 then
+						pcall(function() humanoid.WalkSpeed = 20 end)
+					else
+						pcall(function() humanoid.WalkSpeed = 16 end)
+					end
+
 					humanoid:MoveTo(target)
 					bot:SetAttribute("targetx", target.X)
 					bot:SetAttribute("targetz", target.Z)
 				else
-					-- stop movement
+					-- stop and restore default speed
+					pcall(function() humanoid.WalkSpeed = 16 end)
 					pcall(function() humanoid:Move(Vector3.zero) end)
 				end
 			end

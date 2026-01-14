@@ -23,7 +23,7 @@ physics:CollisionGroupSetCollidable("soldier", "player", false)
 local companiesfolder = Instance.new("Folder")
 companiesfolder.Name = "companies"
 companiesfolder.Parent = workspace
--- print("company_manager: companies folder created")
+--print("company_manager: companies folder created")
 
 -- tag bot model with Team and OwnBy under humanoid
 function module.tag_bot(bot, player)
@@ -100,6 +100,9 @@ function module.create_soldier(position, owner)
 	musket.init(bot)
 	musket.set_idle(bot)
 
+	-- set default walk speed
+	if humanoid then pcall(function() humanoid.WalkSpeed = 16 end) end
+
 	-- death handling: mark slot empty and cleanup
 	humanoid.Died:Connect(function()
 		print("company_manager: soldier died")
@@ -125,6 +128,9 @@ function module.destroy_company(player)
 	local company = companies[player]
 	if not company then return end
 
+	-- ensure fire-at-will stopped
+	module.stop_fireatwill(player)
+
 	for i = 1, company.maxslots do
 		local bot = company.slots[i]
 		if bot and bot ~= false then
@@ -133,14 +139,12 @@ function module.destroy_company(player)
 		end
 	end
 
-	if company.folder then
-		pcall(function() company.folder:Destroy() end)
-	end
+	if company.folder then pcall(function() company.folder:Destroy() end) end
 
 	companies[player] = nil
 end
 
-local max_bots_per_player = 165 --fucyou
+local max_bots_per_player = 165
 
 -- spawn company: creates folder and spawns bots in center-out order
 function module.spawn_company(player, count)
@@ -148,9 +152,9 @@ function module.spawn_company(player, count)
 	print("company_manager.spawn_company called", player.Name, count)
 	if companies[player] then return end
 	if not player.Character or not player.Character:FindFirstChild("HumanoidRootPart") then return end
-	
+
 	count = math.clamp(count or 0, 1, max_bots_per_player)
-	
+
 	local companyfolder = Instance.new("Folder")
 	companyfolder.Name = player.Name .. "_company"
 	companyfolder.Parent = companiesfolder
@@ -163,7 +167,9 @@ function module.spawn_company(player, count)
 		maxslots = count,
 		follow = true,
 		anchor = player.Character.HumanoidRootPart.CFrame,
-		folder = companyfolder
+		folder = companyfolder,
+		fireatwill = false, -- controls /fire2
+		_fire_threads = {}, -- [bot] = thread
 	}
 
 	-- compute columns and center-out order
@@ -216,6 +222,7 @@ function module.fillgaps(player)
 end
 
 function module.is_front_rank(player, bot)
+	-- wrapper kept for API parity (not used widely)
 	local company = companies[player]
 	if not company then return false end
 	return formation.is_front_rank(company, bot)
@@ -228,5 +235,107 @@ function module.update_company(player, anchor_cframe, spacing, stoptolerance)
 	formation.update_formation(company, anchor_cframe, spacing, stoptolerance)
 end
 
--- return module
+function module.can_bot_fire(company, bot)
+--	print("can_bot_fire called")
+
+	if not company or not bot then return false end
+	return formation.is_front_rank(company, bot)
+end
+
+-- internal: start per-bot fire loop for a front-rank bot
+local function start_bot_fire_loop(company, bot)
+--	print("start_bot_fire_loop called")
+
+	local thread = task.spawn(function()
+		while company.fireatwill do
+			if not bot or not bot.Parent then break end
+
+			if bot:GetAttribute("musket_state") == nil or bot:GetAttribute("has_bullet") == nil then
+				musket.init(bot)
+				musket.set_idle(bot)
+			end
+
+			local state = bot:GetAttribute("musket_state")
+			local has_bullet = bot:GetAttribute("has_bullet")
+
+			-- only front rank may fire, gaps can promote bots
+			if not formation.is_front_rank(company, bot) then
+				task.wait(0.1)
+				continue
+			end
+
+			-- random idle spacing
+			if state == "idle" or state == "makereadyidle" or state == "aimidle" or state == "reloadidle" then
+				local delaytime = math.random(20, 80) / 100
+				print("fire2 idle delay", delaytime)
+				local t = 0
+				while t < delaytime and company.fireatwill do
+					task.wait(0.05)
+					t += 0.05
+				end
+			end
+
+			if not company.fireatwill then break end
+
+			if state == "idle" then
+				musket.present(bot)
+
+			elseif state == "makereadyidle" then
+				musket.aim(bot)
+
+			elseif state == "aimidle" and has_bullet == true then
+				musket.fire(bot)
+
+			elseif state == "reloadidle" and has_bullet == false then
+				musket.reload(bot)
+
+			else
+				task.wait(0.05)
+			end
+
+			task.wait(0.02)
+		end
+
+		print("fire2 loop ended")
+	end)
+
+	return thread
+end
+
+-- start_fireatwill: begin continuous per-front-rank-bot firing
+function module.start_fireatwill(player)
+--	print("module.start_fireatwill called")
+
+	local company = companies[player]
+	if not company then return end
+	if company.fireatwill then return end
+
+	company.fireatwill = true
+	company._fire_threads = {}
+
+	for i = 1, company.maxslots do
+		local bot = company.slots[i]
+		if bot and bot ~= false then
+			if bot:GetAttribute("musket_state") == nil or bot:GetAttribute("has_bullet") == nil then
+				musket.init(bot)
+				musket.set_idle(bot)
+			end
+
+			company._fire_threads[bot] = start_bot_fire_loop(company, bot)
+			task.wait(0.01)
+		end
+	end
+end
+
+-- stop_fireatwill: disable fire-at-will and clean up per-bot loops
+function module.stop_fireatwill(player)
+--	print("module.stop_fireatwill called")
+
+	local company = companies[player]
+	if not company then return end
+
+	company.fireatwill = false
+	company._fire_threads = {}
+end
+
 return module

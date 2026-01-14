@@ -8,6 +8,8 @@ local musket = require(script:WaitForChild("musket_module"))
 local formation = require(script:WaitForChild("formation_module"))
 local manager = require(script:WaitForChild("company_manager"))
 
+local botcmd = replicatedstorage:WaitForChild("botcmd"):WaitForChild("send")
+
 local chantfolder = replicatedstorage:WaitForChild("Asset")
 	:WaitForChild("SFX")
 	:WaitForChild("chant")
@@ -231,4 +233,10 @@ task.spawn(function()
 		end
 		task.wait(formationrate)
 	end
+end)
+
+
+botcmd.OnServerEvent:Connect(function(player, text)
+	print("gui command", player.Name, text)
+	onchatted(player, text)
 end)

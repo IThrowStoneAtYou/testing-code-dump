@@ -131,6 +131,12 @@ local function simulate_bullet(bot)
 	local origin, dir = get_muzzle(bot)
 	if not origin then return end
 
+	-- this applies musket spread
+	local spread = math.rad(2.5)
+	local yaw = (math.random() - 0.5) * spread
+	local pitch = (math.random() - 0.5) * spread
+	dir = (CFrame.lookAt(Vector3.zero, dir) * CFrame.Angles(pitch, yaw, 0)).LookVector
+
 	local velocity = dir * bullet_speed
 	local position = origin
 	local life = 0
@@ -192,6 +198,59 @@ local function simulate_bullet(bot)
 	end)
 end
 
+function module.find_target(bot, range)
+	print("find_target called")
+
+	local root = bot:FindFirstChild("HumanoidRootPart")
+	local humanoid = bot:FindFirstChildWhichIsA("Humanoid")
+	if not root or not humanoid then return nil end
+
+	local myteam = humanoid:FindFirstChild("Team") and humanoid.Team.Value
+
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.FilterDescendantsInstances = { bot }
+
+	local candidates = {}
+
+	for _, model in ipairs(workspace:GetChildren()) do
+		local h = model:FindFirstChildWhichIsA("Humanoid")
+		local hrp = model:FindFirstChild("HumanoidRootPart")
+
+		if h and hrp and model ~= bot and h.Health > 0 then
+			local tag = h:FindFirstChild("Team")
+			if not tag or tag.Value ~= myteam then
+				local dir = hrp.Position - root.Position
+				local dist = dir.Magnitude
+
+				if dist <= range then
+					local hit = workspace:Raycast(root.Position, dir, params)
+					if hit and hit.Instance:IsDescendantOf(model) then
+						table.insert(candidates, model)
+					end
+				end
+			end
+		end
+	end
+
+	if #candidates == 0 then return nil end
+	return candidates[ math.random(1, #candidates) ]
+end
+
+-- this rotates the bot to face a target
+function module.face_target(bot, target)
+	print("face_target called")
+
+	local root = bot:FindFirstChild("HumanoidRootPart")
+	local thrp = target and target:FindFirstChild("HumanoidRootPart")
+	if not root or not thrp then return end
+
+	local pos = root.Position
+	local look = Vector3.new(thrp.Position.X, pos.Y, thrp.Position.Z)
+
+	root.CFrame = CFrame.new(pos, look)
+end
+
 -- set_idle: set idle animation and state
 function module.set_idle(bot)
 	module.stop_all(bot)
@@ -212,12 +271,21 @@ end
 
 -- aim: play to_aim -> aim idle
 function module.aim(bot)
+	print("musket.aim called")
+
+	-- this picks a target when aiming
+	local target = module.find_target(bot, 500)
+	if target then
+		module.face_target(bot, target)
+	end
+
 	-- only transition from makereadyidle
 	if bot:GetAttribute("musket_state") ~= "makereadyidle" then return end
-	bot:SetAttribute("musket_state","toaim")
-	play_anim(bot, animids.to_aim,false,function()
-		bot:SetAttribute("musket_state","aimidle")
-		play_anim(bot, animids.aim_idle,true)
+
+	bot:SetAttribute("musket_state", "toaim")
+	play_anim(bot, animids.to_aim, false, function()
+		bot:SetAttribute("musket_state", "aimidle")
+		play_anim(bot, animids.aim_idle, true)
 	end)
 end
 

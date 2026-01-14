@@ -304,6 +304,7 @@ function ClientMain:rayHit(cast, result, segmentVelocity, cosmeticBullet)
 
 		if canRicochet then
 			self:ricochet(result.Position, result.Normal, segmentVelocity)
+
 		else
 			self:playImpactSound("Impact", result.Position, result.Normal)
 		end

@@ -159,7 +159,7 @@ local function simulate_bullet(bot)
 			local dt = step_rate
 			life += dt
 
-			-- gravity drop (optional)
+			-- gravity drop 
 			velocity += Vector3.new(0, 0, 0) * dt
 
 			local nextpos = position + velocity * dt

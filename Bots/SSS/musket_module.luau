@@ -12,6 +12,12 @@ local anim_folder = replicatedstorage:WaitForChild("Asset")
 	:WaitForChild("Animations")
 	:WaitForChild("Musket")
 
+local sfx = replicatedstorage:WaitForChild("Asset")
+	:WaitForChild("SFX")
+	:WaitForChild("musket")
+	:WaitForChild("fire")
+
+
 local animids = {
 	idle = anim_folder:WaitForChild("Idle"),
 	make_ready = anim_folder:WaitForChild("MakeReady"),
@@ -23,6 +29,7 @@ local animids = {
 	reload_idle = anim_folder:WaitForChild("ReloadIdle"),
 }
 
+-- weak....
 local musket_data = setmetatable({}, { __mode = "k" })
 
 -- animator getter
@@ -103,6 +110,28 @@ local function get_muzzle(bot)
 	if muzzle:IsA("BasePart") then
 		return muzzle.Position, muzzle.CFrame.LookVector
 	end
+end
+
+local function play_fire_sound(bot)
+	print("play_fire_sound called")
+
+	local origin, _ = get_muzzle(bot)
+	if not origin then return end
+
+	local Musket = bot:FindFirstChild("Musket")
+
+	local muzzle = Musket:FindFirstChild("Muzzle", true)
+	
+	local sounds = sfx:GetChildren()
+	if #sounds == 0 then return end
+
+	local sound = sounds[math.random(1,#sounds)]:Clone()
+	sound.Parent = muzzle
+	sound:Play()
+
+	sound.Ended:Connect(function()
+		sound:Destroy()
+	end)
 end
 
 local function simulate_bullet(bot)
@@ -208,7 +237,8 @@ function module.fire(bot)
 
 	bot:SetAttribute("has_bullet", false)
 	bot:SetAttribute("musket_state", "fire")
-
+	
+	play_fire_sound(bot)
 	simulate_bullet(bot)
 
 	play_anim(bot, animids.fire, false, function()

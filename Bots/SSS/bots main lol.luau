@@ -9,6 +9,10 @@ local musket = require(script:WaitForChild("musket_module"))
 local formation = require(script:WaitForChild("formation_module"))
 local manager = require(script:WaitForChild("company_manager"))
 
+local chantfolder = replicatedstorage:WaitForChild("Asset")
+	:WaitForChild("SFX")
+	:WaitForChild("chant")
+	:WaitForChild("rus")
 
 local Cmdr = require(replicatedstorage.Cmdr)
 
@@ -19,13 +23,36 @@ Cmdr:RegisterHooksIn(replicatedstorage.Cmdr.Hooks)
 print("game started")
 
 -- formation settings
-local spacing = { side = 5.8,
-				  front = 6, 
-				  back = 10 
+local spacing = { 
+	side = 5.8,
+	front = 6, 
+	back = 10 
 }
 
 local formationrate = 0.12
-local stoptolerance = 1.5
+local stoptolerance = 1
+
+local function play_chant(company)
+	print("play_chant called")
+
+	local sounds = chantfolder:GetChildren()
+	if #sounds == 0 then return end
+
+	for i = 1, company.maxslots do
+		local bot = company.slots[i]
+		if bot and bot ~= false then
+			local head = bot:FindFirstChild("Head")
+			if head then
+				local sound = sounds[math.random(1,#sounds)]:Clone()
+				sound.Parent = head
+				sound:Play()
+				sound.Ended:Connect(function()
+					sound:Destroy()
+				end)
+			end
+		end
+	end
+end
 
 -- chat command handler
 local function onchatted(player, msg)
@@ -66,6 +93,10 @@ local function onchatted(player, msg)
 		if player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
 			company.anchor = player.Character.HumanoidRootPart.CFrame
 		end
+	end
+	
+	if args[1] == "/chant" and company then
+		play_chant(company)
 	end
 
 	-- musket commands (front rank only)

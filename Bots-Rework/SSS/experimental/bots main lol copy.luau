@@ -20,7 +20,7 @@ local Cmdr = require(replicatedstorage.Cmdr)
 Cmdr:RegisterDefaultCommands()
 Cmdr:RegisterHooksIn(replicatedstorage.Cmdr.Hooks)
 
-print("game started")
+--print("game started")
 
 -- formation settings
 local spacing = {
@@ -29,7 +29,7 @@ local spacing = {
 	back = 10
 }
 
-local anchor_offsets = {}
+local anchor_offsets = {}  -- offset for anchor
 local anchor_mode = {}   -- "back", "left", "right"
 
 
@@ -57,9 +57,10 @@ end
 
 -- this calculates how wide the company currently is
 local function get_company_half_width(company, spacing)
---	print("get_company_half_width called")
-
-	if not company then return 0 end
+	if not company then 
+		return 0 
+	end
+	
 	local columns = math.ceil(company.maxslots / company.rows)
 	local width = columns * spacing.side
 	return width * 0.5
@@ -67,8 +68,6 @@ end
 
 -- this computes formation extents in studs
 local function get_company_extents(company, spacing)
---	print("get_company_extents called")
-
 	local columns = math.ceil(company.maxslots / company.rows)
 	local width = columns * spacing.side
 	local depth = company.rows * spacing.front
@@ -78,8 +77,6 @@ end
 
 -- this recalculates flank offsets when rows or slot counts change
 local function update_anchor_offset(player, company)
---	print("update_anchor_offset called")
-
 	local mode = anchor_mode[player]
 	if not mode or not company then return end
 
@@ -307,18 +304,39 @@ players.PlayerAdded:Connect(function(player)
 				physics:SetPartCollisionGroup(obj, "player")
 			end
 		end)
+		
+		-- delete company if player left the game.
+		players.PlayerRemoving:Connect(function(player)
+			print("company_controller: player removing", player.Name)
+
+			-- destroy company if it exists
+			manager.destroy_company(player)
+
+			-- cleanup anchor data
+			anchor_offsets[player] = nil
+			anchor_mode[player] = nil
+		end)
 
 		-- on player death, force unfollow and set anchor
 		char:WaitForChild("Humanoid").Died:Connect(function()
-			print("company_controller: player died, forcing unfollow", player.Name)
+			print("company_controller: player died", player.Name)
+
 			local companies = manager.get_companies()
 			local company = companies[player]
-			if company then
-				company.follow = false
-				if char:FindFirstChild("HumanoidRootPart") then
-					local offset = anchor_offsets[player] or CFrame.new()
-					company.anchor = char.HumanoidRootPart.CFrame * offset
-				end
+			if not company then return end
+
+			-- if already unfollowed, do nothing (anchor is already fixed)
+			if company.follow == false then
+			--	print("company_controller: already unfollowed, anchor preserved")
+				return
+			end
+
+			-- otherwise force unfollow and lock anchor at death position
+			company.follow = false
+
+			if char:FindFirstChild("HumanoidRootPart") then
+				local offset = anchor_offsets[player] or CFrame.new()
+				company.anchor = char.HumanoidRootPart.CFrame * offset
 			end
 		end)
 	end)

@@ -110,7 +110,7 @@ end
 
 
 local bullet_speed = 1950        -- studs per second (musket ~ 800–1000)
-local max_lifetime = 15          -- seconds
+local max_lifetime = 10          -- seconds
 local step_rate = 1 / 120       -- simulation step
 
 local function get_predicted_direction(bot, target, origin)
@@ -129,9 +129,12 @@ local function get_predicted_direction(bot, target, origin)
 	return (predicted_pos - origin).Unit
 end
 
+local tracer_event = replicatedstorage:WaitForChild("bullet_tracer")
 
 local function simulate_bullet(bot)
---	print("simulate_bullet called")
+	-- server-side simulated projectile, no visuals
+--	print("simulate_bullet server")
+	debug.profilebegin("simulate_bullet")
 
 	local musket = bot:FindFirstChild("Musket")
 	if not musket then return end
@@ -142,10 +145,8 @@ local function simulate_bullet(bot)
 	local origin
 	if muzzle:IsA("Attachment") then
 		origin = muzzle.WorldPosition
-	elseif muzzle:IsA("BasePart") then
-		origin = muzzle.Position
 	else
-		return
+		origin = muzzle.Position
 	end
 
 	local dir
@@ -153,7 +154,6 @@ local function simulate_bullet(bot)
 	-- read stored target
 	local hum = bot:FindFirstChildWhichIsA("Humanoid")
 	if hum then
-		print("1")
 		local tag = hum:FindFirstChild("target")
 		local target = tag and tag.Value
 		if target and target.Parent then
@@ -164,9 +164,10 @@ local function simulate_bullet(bot)
 		end
 	end
 
-	-- fallback to muzzle forward
+	-- fallback
 	if not dir then
-		print("2")
+	--	print("fallback muzzle direction")
+
 		if muzzle:IsA("Attachment") then
 			dir = muzzle.WorldCFrame.LookVector
 		else
@@ -174,12 +175,13 @@ local function simulate_bullet(bot)
 		end
 	end
 
-	-- apply spread last (does not affect leading math)
-	local spread = math.rad(2)
+	-- spread
+	local spread = math.rad(1)
 	local yaw = (math.random() - 0.5) * spread
 	local pitch = (math.random() - 0.5) * spread
 	dir = (CFrame.lookAt(Vector3.zero, dir) * CFrame.Angles(pitch, yaw, 0)).LookVector
 
+	-- initial state
 	local velocity = dir * bullet_speed
 	local position = origin
 	local life = 0
@@ -188,22 +190,16 @@ local function simulate_bullet(bot)
 	params.FilterType = Enum.RaycastFilterType.Exclude
 	params.FilterDescendantsInstances = { bot }
 
-	-- tracer
-	local tracer = Instance.new("Part")
-	tracer.Anchored = true
-	tracer.CanCollide = false
-	tracer.Size = Vector3.new(0.15, 0.15, 0.15)
-	tracer.Material = Enum.Material.Neon
-	tracer.Parent = workspace
-	debris:AddItem(tracer, max_lifetime)
+	-- tell clients to render tracer using same parameters
+	tracer_event:FireAllClients("start", origin, velocity)
 
 	task.spawn(function()
 		while life < max_lifetime do
 			local dt = step_rate
 			life += dt
 
-			-- user-controlled bullet drop (unchanged)
-			velocity += Vector3.new(0, -1.5, 0) * dt
+			-- gravity
+			velocity += Vector3.new(0, -10, 0) * dt
 
 			local nextpos = position + velocity * dt
 			local result = workspace:Raycast(position, nextpos - position, params)
@@ -211,26 +207,27 @@ local function simulate_bullet(bot)
 			if result then
 				local model = result.Instance:FindFirstAncestorOfClass("Model")
 				if model then
-					local hum = model:FindFirstChildWhichIsA("Humanoid")
-					if hum then
+					local hum2 = model:FindFirstChildWhichIsA("Humanoid")
+					if hum2 then
 						local myhum = bot:FindFirstChildWhichIsA("Humanoid")
 						local myteam = myhum and myhum:FindFirstChild("Team")
-						local histeam = hum:FindFirstChild("Team")
+						local histeam = hum2:FindFirstChild("Team")
 						if not myteam or not histeam or myteam.Value ~= histeam.Value then
-							hum:TakeDamage(1000)
+							hum2:TakeDamage(1000)
 						end
 					end
 				end
+				
+				tracer_event:FireAllClients("hit", position)
+				
 				break
 			end
 
-			tracer.Position = nextpos
 			position = nextpos
 			task.wait(dt)
 		end
-
-		tracer:Destroy()
 	end)
+	debug.profileend()
 end
 
 function module.find_target(bot, range)
@@ -306,7 +303,7 @@ end
 
 -- aim: play to_aim -> aim idle
 function module.aim(bot)
---	print("musket.aim called")
+--	print("musket.aim")
 
 	if bot:GetAttribute("musket_state") ~= "makereadyidle" then return end
 
@@ -320,7 +317,7 @@ function module.aim(bot)
 				tag.Name = "target"
 				tag.Parent = hum
 			end
-			tag.Value = target
+			tag.Value = target -- ObjectValue prevents name collision
 		end
 	end
 
@@ -331,11 +328,11 @@ function module.aim(bot)
 	end)
 end
 
+
 -- fire: simulate shot and transition to reload idle
 function module.fire(bot)
---	print("musket.fire called")
+--	print("musket.fire")
 
-	-- only allowed from aimidle and must have bullet
 	if bot:GetAttribute("musket_state") ~= "aimidle" then return end
 	if bot:GetAttribute("has_bullet") ~= true then return end
 
@@ -345,13 +342,20 @@ function module.fire(bot)
 	play_fire_sound(bot)
 	simulate_bullet(bot)
 
-	-- clear target correctly (ObjectValue-safe)
+	-- clear target safely
 	local hum = bot:FindFirstChildWhichIsA("Humanoid")
 	if hum then
 		local tag = hum:FindFirstChild("target")
 		if tag then
-			tag.Value = nil -- ObjectValue must be nil, not ""
+			tag.Value = nil
 		end
+	end
+	
+	-- disable aiming immediately
+	local root = bot:FindFirstChild("HumanoidRootPart")
+	local align = root:FindFirstChild("aim_align")
+	if align then
+		align.Enabled = false
 	end
 
 	play_anim(bot, animids.fire, false, function()
@@ -359,6 +363,7 @@ function module.fire(bot)
 		play_anim(bot, animids.reload_idle, true)
 	end)
 end
+
 
 -- reload: play reload then set has_bullet true and idle
 function module.reload(bot)
@@ -374,9 +379,18 @@ end
 
 -- cease: stop actions and set appropriate idle state depending on has_bullet
 function module.cease(bot)
---	print("musket.cease called")
+	print("musket.cease")
 
 	module.stop_all(bot)
+
+	-- disable aim hard-stop
+	local root = bot:FindFirstChild("HumanoidRootPart")
+	if root then
+		local align = root:FindFirstChild("aim_align")
+		if align then
+			align.Enabled = false
+		end
+	end
 
 	local hum = bot:FindFirstChildWhichIsA("Humanoid")
 	if hum then
@@ -387,13 +401,14 @@ function module.cease(bot)
 	end
 
 	if bot:GetAttribute("has_bullet") == true then
-		bot:SetAttribute("musket_state","idle")
-		play_anim(bot, animids.idle,true)
+		bot:SetAttribute("musket_state", "idle")
+		play_anim(bot, animids.idle, true)
 	else
-		bot:SetAttribute("musket_state","reloadidle")
-		play_anim(bot, animids.reload_idle,true)
+		bot:SetAttribute("musket_state", "reloadidle")
+		play_anim(bot, animids.reload_idle, true)
 	end
 end
+
 
 -- stop_all exposed
 module.stop_all = module.stop_all

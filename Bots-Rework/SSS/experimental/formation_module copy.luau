@@ -55,6 +55,78 @@ function module.rebuiltslots(company)
 end
 
 function module.fillgaps(company)
+	-- this compresses bots forward (rows) and inward (columns) without skipping empty columns
+	print("formation_module.fillgaps called")
+
+	local rows = company.rows
+	local columns = math.ceil(company.maxslots / rows)
+	local slots = company.slots
+
+	-- vertical compression (pull bots forward in each file)
+	local changed = true
+	while changed do
+		changed = false
+		for file = 1, columns do
+			for row = 1, rows do
+				local slot = (row - 1) * columns + file
+				if slot <= company.maxslots and slots[slot] == false then
+					for r = row + 1, rows do
+						local backslot = (r - 1) * columns + file
+						if backslot <= company.maxslots and slots[backslot] and slots[backslot] ~= false then
+							slots[slot] = slots[backslot]
+							slots[backslot] = false
+							slots[slot]:SetAttribute("slot", slot)
+							changed = true
+							break
+						end
+					end
+				end
+			end
+		end
+	end
+
+	-- horizontal compression (remove empty columns safely)
+	local file = 1
+	while file <= columns do
+		local empty = true
+
+		-- check if this column is completely empty
+		for row = 1, rows do
+			local slot = (row - 1) * columns + file
+			if slot <= company.maxslots and slots[slot] and slots[slot] ~= false then
+				empty = false
+				break
+			end
+		end
+
+		if empty then
+			-- shift all columns behind this one to the left
+			for f = file + 1, columns do
+				for row = 1, rows do
+					local from = (row - 1) * columns + f
+					local to = (row - 1) * columns + (f - 1)
+
+					if from <= company.maxslots then
+						slots[to] = slots[from]
+						if slots[to] and slots[to] ~= false then
+							slots[to]:SetAttribute("slot", to)
+						end
+						slots[from] = false
+					end
+				end
+			end
+
+			-- do NOT increment file
+			-- recheck same column index again because new data shifted in
+		else
+			file += 1
+		end
+	end
+end
+
+
+--[[
+function module.fillgaps(company)
 --	print("formation_module.fillgaps called")
 
 	local rows = company.rows
@@ -115,6 +187,7 @@ function module.fillgaps(company)
 		end
 	end
 end
+--[[]]
 
 -- is_front_rank: check if a bot is in front rank (first row)
 function module.is_front_rank(company, bot)

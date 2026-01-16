@@ -13,7 +13,7 @@ local bmusket = replicatedstorage:WaitForChild("Asset"):WaitForChild("bmusket")
 -- storage for companies keyed by player
 local companies = {}
 
-local max_bots_per_player = 185
+local max_bots_per_player = 200
 
 -- ensure collision groups exist and are configured
 pcall(function() physics:CreateCollisionGroup("soldier") end)
@@ -81,7 +81,9 @@ local function ensure_target_value(bot)
 end
 
 local function get_aim_align(bot)
---	print("get_aim_align called")
+	--	print("get_aim_align")
+	
+	debug.profilebegin("get_aim_align")
 
 	local root = bot:FindFirstChild("HumanoidRootPart")
 	if not root then return nil end
@@ -101,17 +103,63 @@ local function get_aim_align(bot)
 		align.Mode = Enum.OrientationAlignmentMode.OneAttachment
 		align.RigidityEnabled = false
 		align.MaxTorque = math.huge
-		align.Responsiveness = 17
+		align.Responsiveness = 20
+		align.Enabled = false 
 		align.Parent = root
 	end
-
+	
+	debug.profileend()
+	
 	return align
 end
 
+local function update_aim(bot)
+--	print("update_aim") -- debug
+
+	local hum = bot:FindFirstChildWhichIsA("Humanoid")
+	local root = bot:FindFirstChild("HumanoidRootPart")
+	if not hum or not root then return end
+
+	-- only aim during aim states
+	local state = bot:GetAttribute("musket_state")
+	if state ~= "aimidle" and state ~= "toaim" then
+		local align = root:FindFirstChild("aim_align")
+		if align then
+			align.Enabled = false -- hard stop to prevent fighting
+		end
+		return
+	end
+
+	-- read target ObjectValue
+	local tag = hum:FindFirstChild("target")
+	local target = tag and tag.Value
+	if not target or not target.Parent then
+		local align = root:FindFirstChild("aim_align")
+		if align then
+			align.Enabled = false
+		end
+		return
+	end
+
+	local thrp = target:FindFirstChild("HumanoidRootPart")
+	if not thrp then return end
+
+	-- get or create align
+	local align = get_aim_align(bot)
+	if not align then return end
+
+	local from = root.Position
+	local to = Vector3.new(thrp.Position.X, from.Y, thrp.Position.Z)
+
+	align.CFrame = CFrame.lookAt(from, to)
+	align.Enabled = true
+end
 
 function module.create_soldier(position, owner)
 	-- create bot, set network owner and collision group, prepare attributes and death handler
---	print("company_manager.create_soldier called")
+	--	print("company_manager.create_soldier called")
+	debug.profilebegin("create_soldier")
+	
 	local bot = bmusket:Clone()
 	bot.Parent = workspace
 	bot:PivotTo(CFrame.new(position))
@@ -161,6 +209,8 @@ function module.create_soldier(position, owner)
 		musket.stop_all(bot)
 		pcall(function() bot:Destroy() end)
 	end)
+	
+	debug.profileend()
 
 	return bot
 end
@@ -245,30 +295,6 @@ function module.spawn_company(player, count)
 	companies[player] = company
 end
 
--- continuously aim bot at its stored target
-local function update_aim(bot)
---	print("update_aim called")
-
-	local hum = bot:FindFirstChildWhichIsA("Humanoid")
-	local root = bot:FindFirstChild("HumanoidRootPart")
-	if not hum or not root then return end
-
-	local tag = hum:FindFirstChild("target")
-	local target = tag and tag.Value
-	if not target or not target.Parent then return end
-
-	local thrp = target:FindFirstChild("HumanoidRootPart")
-	if not thrp then return end
-
-	local align = get_aim_align(bot)
-	if not align then return end
-
-	local from = root.Position
-	local to = Vector3.new(thrp.Position.X, from.Y, thrp.Position.Z)
-
-	align.CFrame = CFrame.lookAt(from, to)
-end
-
 -- expose companies table (read-only usage)
 function module.get_companies()
 	return companies
@@ -339,7 +365,7 @@ local function start_bot_fire_loop(company, bot)
 			local state = bot:GetAttribute("musket_state")
 			local has_bullet = bot:GetAttribute("has_bullet")
 
-			-- only front rank may fire, gaps can promote bots
+			-- only front rank may fire
 			if not formation.is_front_rank(company, bot) then
 				task.wait(0.1)
 				continue
@@ -415,9 +441,8 @@ function module.stop_fireatwill(player)
 	company._fire_threads = {}
 end
 
--- continuously update aiming for all bots with targets
+-- continuous aim updater
 task.spawn(function()
-	-- keeps bots smoothly facing their targets
 	while true do
 		for _, company in pairs(companies) do
 			for _, bot in pairs(company.slots) do
@@ -429,6 +454,5 @@ task.spawn(function()
 		task.wait(0.05)
 	end
 end)
-
 
 return module

@@ -29,9 +29,11 @@ local spacing = {
 	back = 10
 }
 
-local anchor_offsets = {}  -- offset
+local anchor_offsets = {}
+local anchor_mode = {}   -- "back", "left", "right"
 
-local formationrate = 0.1
+
+local formationrate = 0.12
 local stoptolerance = 1
 
 -- play_chant: play chant sfx on each bot head
@@ -53,13 +55,60 @@ local function play_chant(company)
 	end
 end
 
+-- this calculates how wide the company currently is
 local function get_company_half_width(company, spacing)
 	print("get_company_half_width called")
 
 	if not company then return 0 end
 	local columns = math.ceil(company.maxslots / company.rows)
 	local width = columns * spacing.side
-	return width * 0.35
+	return width * 0.5
+end
+
+-- this computes formation extents in studs
+local function get_company_extents(company, spacing)
+	print("get_company_extents called")
+
+	local columns = math.ceil(company.maxslots / company.rows)
+	local width = columns * spacing.side
+	local depth = company.rows * spacing.front
+
+	return width * 0.5, depth
+end
+
+-- this recalculates flank offsets when rows or slot counts change
+local function update_anchor_offset(player, company)
+	print("update_anchor_offset called")
+
+	local mode = anchor_mode[player]
+	if not mode or not company then return end
+
+	local columns = math.ceil(company.maxslots / company.rows)
+	local width = columns * spacing.side
+	local depth = company.rows * spacing.front
+
+	if mode == "right" then
+		-- player stands at front-left of company
+		anchor_offsets[player] = CFrame.new(
+			width * 0.5 + 6,
+			0,
+			depth * 0.5 + 6
+		)
+	elseif mode == "left" then
+		-- player stands at front-right of company
+		anchor_offsets[player] = CFrame.new(
+			- width * 0.5 - 6,
+			0,
+			depth * 0.5 + 6
+		)
+	elseif mode == "back" then
+		-- player stands in front of first rank
+		anchor_offsets[player] = CFrame.new(
+			0,
+			0,
+			depth * 0.5 + -13
+		)
+	end
 end
 
 -- onchatted: parse chat commands and control manager/formation/musket
@@ -71,7 +120,18 @@ local function onchatted(player, msg)
 
 	if args[1] == "/spawn" then
 		local n = tonumber(args[2])
-		if n then manager.spawn_company(player, n) end
+		if n then
+			manager.spawn_company(player, n)
+
+			-- default anchor mode to left flank
+			anchor_mode[player] = "left"
+
+			local companies = manager.get_companies()
+			local company = companies[player]
+			if company then
+				update_anchor_offset(player, company)
+			end
+		end
 		return
 	end
 
@@ -90,6 +150,7 @@ local function onchatted(player, msg)
 		if n then
 			company.rows = math.max(1, n)
 			manager.rebuiltslots(player)
+			update_anchor_offset(player, company)
 			print("company_controller: rows set", n)
 		end
 		return
@@ -97,6 +158,7 @@ local function onchatted(player, msg)
 
 	if args[1] == "/gaps" and company then
 		manager.fillgaps(player)
+		update_anchor_offset(player, company)
 		return
 	end
 
@@ -113,47 +175,43 @@ local function onchatted(player, msg)
 		local offset = anchor_offsets[player] or CFrame.new()
 
 		company.follow = false
-		company.anchor_locked = true
 
 		if player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
-			-- freeze world anchor including offset
 			company.anchor = player.Character.HumanoidRootPart.CFrame * offset
 		end
 
 		return
 	end
-
-
-	if args[1] == "/chant" and company then
-		play_chant(company)
-		return
-	end
 	
 	if args[1] == "/left" and company then
-		print("anchor set left")
-		local w = get_company_half_width(company, spacing)
-		anchor_offsets[player] = CFrame.new(-w - 6, 0, 0)
+		print("anchor set left flank")
+
+		anchor_mode[player] = "left"
+		update_anchor_offset(player, company)
+
 		return
 	end
 
 	if args[1] == "/right" and company then
-		print("anchor set right")
-		local w = get_company_half_width(company, spacing)
-		anchor_offsets[player] = CFrame.new(w + 6, 0, 0)
-		return
-	end
+		print("anchor set right flank")
 
-	if args[1] == "/front" and company then
-		print("anchor set front")
-		local w = get_company_half_width(company, spacing)
-		anchor_offsets[player] = CFrame.new(0, 0, -w - 8)
+		anchor_mode[player] = "right"
+		update_anchor_offset(player, company)
+
 		return
 	end
 
 	if args[1] == "/back" and company then
 		print("anchor set back")
-		local w = get_company_half_width(company, spacing)
-		anchor_offsets[player] = CFrame.new(0, 0, w + 8)
+
+		anchor_mode[player] = "back"
+		update_anchor_offset(player, company)
+
+		return
+	end
+
+	if args[1] == "/chant" and company then
+		play_chant(company)
 		return
 	end
 
@@ -258,7 +316,8 @@ players.PlayerAdded:Connect(function(player)
 			if company then
 				company.follow = false
 				if char:FindFirstChild("HumanoidRootPart") then
-					company.anchor = char.HumanoidRootPart.CFrame
+					local offset = anchor_offsets[player] or CFrame.new()
+					company.anchor = char.HumanoidRootPart.CFrame * offset
 				end
 			end
 		end)
@@ -286,7 +345,7 @@ task.spawn(function()
 				else
 					anchor = company.anchor
 				end
-				
+
 				manager.update_company(player, anchor, spacing, stoptolerance)
 			end
 		end

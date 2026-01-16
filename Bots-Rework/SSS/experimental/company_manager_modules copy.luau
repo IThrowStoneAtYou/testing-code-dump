@@ -13,6 +13,8 @@ local bmusket = replicatedstorage:WaitForChild("Asset"):WaitForChild("bmusket")
 -- storage for companies keyed by player
 local companies = {}
 
+local max_bots_per_player = 185
+
 -- ensure collision groups exist and are configured
 pcall(function() physics:CreateCollisionGroup("soldier") end)
 pcall(function() physics:CreateCollisionGroup("player") end)
@@ -23,12 +25,11 @@ physics:CollisionGroupSetCollidable("soldier", "player", false)
 local companiesfolder = Instance.new("Folder")
 companiesfolder.Name = "companies"
 companiesfolder.Parent = workspace
---print("company_manager: companies folder created")
 
 -- tag bot model with Team and OwnBy under humanoid
 function module.tag_bot(bot, player)
 	-- attach Team and OwnBy values under bot humanoid for identification
-	print("company_manager.tag_bot called")
+
 	local humanoid = bot:FindFirstChildWhichIsA("Humanoid")
 	if not humanoid then return end
 
@@ -50,10 +51,9 @@ function module.tag_bot(bot, player)
 	owner.Value = player.Name
 end
 
--- tag player character humanoid with Team string
 function module.tag_player_team(player, character)
 	-- create Team string under player's humanoid for later use
-	print("company_manager.tag_player_team called")
+
 	local humanoid = character:WaitForChild("Humanoid")
 	local tag = humanoid:FindFirstChild("Team")
 	if not tag then
@@ -64,7 +64,6 @@ function module.tag_player_team(player, character)
 	tag.Value = player.Team and player.Team.Name or "none"
 end
 
--- create soldier bot with physics and network ownership configured
 function module.create_soldier(position, owner)
 	-- create bot, set network owner and collision group, prepare attributes and death handler
 	print("company_manager.create_soldier called")
@@ -121,10 +120,10 @@ function module.create_soldier(position, owner)
 	return bot
 end
 
--- destroy company for player (cleanup)
+
 function module.destroy_company(player)
 	-- remove bots and delete the company folder
-	print("company_manager.destroy_company called")
+
 	local company = companies[player]
 	if not company then return end
 
@@ -144,12 +143,8 @@ function module.destroy_company(player)
 	companies[player] = nil
 end
 
-local max_bots_per_player = 185
-
--- spawn company: creates folder and spawns bots in center-out order
 function module.spawn_company(player, count)
 	-- create per-player company folder, spawn bots in center-out file order, initialize musket state
-	print("company_manager.spawn_company called", player.Name, count)
 	if companies[player] then return end
 	if not player.Character or not player.Character:FindFirstChild("HumanoidRootPart") then return end
 
@@ -171,9 +166,8 @@ function module.spawn_company(player, count)
 		fireatwill = false, -- controls /fire2
 		_fire_threads = {}, -- [bot] = thread
 		anchor_locked = false,
+
 	}
-	
---	company.anchor_locked = false
 
 	-- compute columns and center-out order
 	local columns = math.ceil(company.maxslots / company.rows)
@@ -206,38 +200,9 @@ function module.spawn_company(player, count)
 	companies[player] = company
 end
 
--- expose companies table (read-only style usage)
+-- expose companies table (read-only usage)
 function module.get_companies()
 	return companies
-end
-
-function module.shift_anchor(player, xdir, zdir)
-	-- shifts formation anchor relative to player facing
-	print("shift_anchor called", player.Name, xdir, zdir)
-
-	local company = companies[player]
-	if not company then return end
-	if not player.Character or not player.Character:FindFirstChild("HumanoidRootPart") then return end
-
-	local hrp = player.Character.HumanoidRootPart
-	local cf = hrp.CFrame
-
-	local right = cf.RightVector
-	local forward = cf.LookVector
-
-	local offset = Vector3.zero
-
-	if xdir then
-		offset += right * (xdir * 12)
-	end
-
-	if zdir then
-		offset += forward * (zdir * 12)
-	end
-
-	company.anchor = CFrame.new(hrp.Position + offset, hrp.Position + forward)
-
---	print("new anchor", company.anchor.Position)
 end
 
 -- expose utilities from formation module for convenience
@@ -254,8 +219,7 @@ function module.fillgaps(player)
 end
 
 function module.face_company(player)
---	print("face_company called")
-
+	
 	local company = companies[player]
 	if not company then return end
 	if not player.Character or not player.Character:FindFirstChild("HumanoidRootPart") then return end
@@ -288,15 +252,11 @@ function module.update_company(player, anchor_cframe, spacing, stoptolerance)
 end
 
 function module.can_bot_fire(company, bot)
---	print("can_bot_fire called")
-
 	if not company or not bot then return false end
 	return formation.is_front_rank(company, bot)
 end
 
--- internal: start per-bot fire loop for a front-rank bot
 local function start_bot_fire_loop(company, bot)
---	print("start_bot_fire_loop called")
 
 	local thread = task.spawn(function()
 		while company.fireatwill do
@@ -319,7 +279,7 @@ local function start_bot_fire_loop(company, bot)
 			-- random idle spacing
 			if state == "idle" or state == "makereadyidle" or state == "aimidle" or state == "reloadidle" then
 				local delaytime = math.random(20, 80) / 100
-			--	print("fire2 idle delay", delaytime)
+				print("fire2 idle delay", delaytime)
 				local t = 0
 				while t < delaytime and company.fireatwill do
 					task.wait(0.05)
@@ -348,16 +308,14 @@ local function start_bot_fire_loop(company, bot)
 			task.wait(0.02)
 		end
 
-	--	print("fire2 loop ended")
+		print("fire2 loop ended")
 	end)
 
 	return thread
 end
 
--- start_fireatwill: begin continuous per-front-rank-bot firing
 function module.start_fireatwill(player)
---	print("module.start_fireatwill called")
-
+	
 	local company = companies[player]
 	if not company then return end
 	if company.fireatwill then return end
@@ -379,9 +337,7 @@ function module.start_fireatwill(player)
 	end
 end
 
--- stop_fireatwill: disable fire-at-will and clean up per-bot loops
 function module.stop_fireatwill(player)
---	print("module.stop_fireatwill called")
 
 	local company = companies[player]
 	if not company then return end

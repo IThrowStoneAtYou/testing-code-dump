@@ -89,11 +89,6 @@ function module.init(bot)
 	module.stop_all(bot)
 end
 
-local bullet_speed = 1950        -- studs per second (musket ~ 800–1000)
-local gravity = 196.2           -- roblox gravity
-local max_lifetime = 9          -- seconds
-local step_rate = 1 / 120       -- simulation step
-
 -- get_muzzle: return muzzle world position and look vector
 local function get_muzzle(bot)
 	local Musket = bot:FindFirstChild("Musket")
@@ -125,14 +120,18 @@ local function play_fire_sound(bot)
 	sound.Ended:Connect(function() sound:Destroy() end)
 end
 
--- simulate_bullet: spawn a tracer and raycast forward, apply damage to opposite-team humanoids
+local bullet_speed = 1950        -- studs per second (musket ~ 800–1000)
+local max_lifetime = 15          -- seconds
+local step_rate = 1 / 120       -- simulation step
+
 local function simulate_bullet(bot)
---	print("simulate_bullet called")
+	print("simulate_bullet called")
+
 	local origin, dir = get_muzzle(bot)
 	if not origin then return end
 
-	-- this applies musket spread
-	local spread = math.rad(2.5)
+	-- apply musket spread
+	local spread = math.rad(1.55)
 	local yaw = (math.random() - 0.5) * spread
 	local pitch = (math.random() - 0.5) * spread
 	dir = (CFrame.lookAt(Vector3.zero, dir) * CFrame.Angles(pitch, yaw, 0)).LookVector
@@ -145,11 +144,11 @@ local function simulate_bullet(bot)
 	params.FilterType = Enum.RaycastFilterType.Exclude
 	params.FilterDescendantsInstances = { bot }
 
-	-- tracer
+	-- tracer visual
 	local tracer = Instance.new("Part")
 	tracer.Anchored = true
 	tracer.CanCollide = false
-	tracer.Size = Vector3.new(0.15,0.15,0.15)
+	tracer.Size = Vector3.new(0.15, 0.15, 0.15)
 	tracer.Material = Enum.Material.Neon
 	tracer.Parent = workspace
 	debris:AddItem(tracer, max_lifetime)
@@ -159,13 +158,12 @@ local function simulate_bullet(bot)
 			local dt = step_rate
 			life += dt
 
-			-- gravity drop (optional)
-			velocity += Vector3.new(0, 0, 0) * dt
+			-- apply user-controlled bullet drop
+			velocity += Vector3.new(0, -5, 0) * dt
 
 			local nextpos = position + velocity * dt
-
-			-- raycast step
 			local result = workspace:Raycast(position, nextpos - position, params)
+
 			if result then
 				local hit = result.Instance
 				local model = hit:FindFirstAncestorOfClass("Model")
@@ -177,9 +175,10 @@ local function simulate_bullet(bot)
 						local myteam = myhum and myhum:FindFirstChild("Team")
 						local histeam = hum:FindFirstChild("Team")
 
+						-- prevent friendly fire
 						if not myteam or not histeam or myteam.Value ~= histeam.Value then
 							hum:TakeDamage(1000)
-						--	print("musket hit", model.Name)
+							print("musket hit", model.Name)
 						end
 					end
 				end
@@ -187,11 +186,9 @@ local function simulate_bullet(bot)
 				break
 			end
 
-			-- move tracer
 			tracer.Position = nextpos
 			position = nextpos
-
-			task.wait(step_rate)
+			task.wait(dt)
 		end
 
 		tracer:Destroy()
@@ -199,7 +196,7 @@ local function simulate_bullet(bot)
 end
 
 function module.find_target(bot, range)
---	print("find_target called")
+	print("find_target called")
 
 	local root = bot:FindFirstChild("HumanoidRootPart")
 	local humanoid = bot:FindFirstChildWhichIsA("Humanoid")
@@ -239,7 +236,7 @@ end
 
 -- this rotates the bot to face a target
 function module.face_target(bot, target)
---	print("face_target called")
+	print("face_target called")
 
 	local root = bot:FindFirstChild("HumanoidRootPart")
 	local thrp = target and target:FindFirstChild("HumanoidRootPart")
@@ -271,7 +268,7 @@ end
 
 -- aim: play to_aim -> aim idle
 function module.aim(bot)
---	print("musket.aim called")
+	print("musket.aim called")
 
 	-- this picks a target when aiming
 	local target = module.find_target(bot, 500)

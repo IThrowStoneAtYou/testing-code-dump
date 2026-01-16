@@ -155,13 +155,11 @@ local function simulate_bullet(bot)
 	if hum then
 		print("1")
 		local tag = hum:FindFirstChild("target")
-		if tag and tag.Value ~= "" then
-			local target = workspace:FindFirstChild(tag.Value, true)
-			if target then
-				local predicted = get_predicted_direction(bot, target, origin)
-				if predicted then
-					dir = predicted
-				end
+		local target = tag and tag.Value
+		if target and target.Parent then
+			local predicted = get_predicted_direction(bot, target, origin)
+			if predicted then
+				dir = predicted
 			end
 		end
 	end
@@ -310,21 +308,19 @@ end
 function module.aim(bot)
 --	print("musket.aim called")
 
-	-- only transition from makereadyidle
 	if bot:GetAttribute("musket_state") ~= "makereadyidle" then return end
 
-	-- pick and store target
 	local target = module.find_target(bot, 500)
 	if target then
 		local hum = bot:FindFirstChildWhichIsA("Humanoid")
 		if hum then
 			local tag = hum:FindFirstChild("target")
 			if not tag then
-				tag = Instance.new("StringValue")
+				tag = Instance.new("ObjectValue")
 				tag.Name = "target"
 				tag.Parent = hum
 			end
-			tag.Value = target.Name
+			tag.Value = target
 		end
 	end
 
@@ -337,6 +333,8 @@ end
 
 -- fire: simulate shot and transition to reload idle
 function module.fire(bot)
+--	print("musket.fire called")
+
 	-- only allowed from aimidle and must have bullet
 	if bot:GetAttribute("musket_state") ~= "aimidle" then return end
 	if bot:GetAttribute("has_bullet") ~= true then return end
@@ -346,11 +344,14 @@ function module.fire(bot)
 
 	play_fire_sound(bot)
 	simulate_bullet(bot)
-	
+
+	-- clear target correctly (ObjectValue-safe)
 	local hum = bot:FindFirstChildWhichIsA("Humanoid")
 	if hum then
 		local tag = hum:FindFirstChild("target")
-		if tag then tag.Value = "" end
+		if tag then
+			tag.Value = nil -- ObjectValue must be nil, not ""
+		end
 	end
 
 	play_anim(bot, animids.fire, false, function()
@@ -373,14 +374,18 @@ end
 
 -- cease: stop actions and set appropriate idle state depending on has_bullet
 function module.cease(bot)
+--	print("musket.cease called")
+
 	module.stop_all(bot)
-	
+
 	local hum = bot:FindFirstChildWhichIsA("Humanoid")
 	if hum then
 		local tag = hum:FindFirstChild("target")
-		if tag then tag.Value = "" end
+		if tag then
+			tag.Value = nil
+		end
 	end
-	
+
 	if bot:GetAttribute("has_bullet") == true then
 		bot:SetAttribute("musket_state","idle")
 		play_anim(bot, animids.idle,true)

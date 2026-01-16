@@ -65,7 +65,7 @@ function module.tag_player_team(player, character)
 end
 
 local function ensure_target_value(bot)
-	-- stores direct model reference
+
 	local hum = bot:FindFirstChildWhichIsA("Humanoid")
 	if not hum then return nil end
 
@@ -247,16 +247,15 @@ end
 
 -- continuously aim bot at its stored target
 local function update_aim(bot)
+--	print("update_aim called")
 
 	local hum = bot:FindFirstChildWhichIsA("Humanoid")
 	local root = bot:FindFirstChild("HumanoidRootPart")
 	if not hum or not root then return end
 
 	local tag = hum:FindFirstChild("target")
-	if not tag or tag.Value == "" then return end
-
-	local target = workspace:FindFirstChild(tag.Value, true)
-	if not target then return end
+	local target = tag and tag.Value
+	if not target or not target.Parent then return end
 
 	local thrp = target:FindFirstChild("HumanoidRootPart")
 	if not thrp then return end
@@ -264,7 +263,6 @@ local function update_aim(bot)
 	local align = get_aim_align(bot)
 	if not align then return end
 
-	-- yaw-only look (prevents tilt / physics instability)
 	local from = root.Position
 	local to = Vector3.new(thrp.Position.X, from.Y, thrp.Position.Z)
 

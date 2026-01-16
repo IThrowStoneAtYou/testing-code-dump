@@ -64,9 +64,54 @@ function module.tag_player_team(player, character)
 	tag.Value = player.Team and player.Team.Name or "none"
 end
 
+local function ensure_target_value(bot)
+	-- stores direct model reference
+	local hum = bot:FindFirstChildWhichIsA("Humanoid")
+	if not hum then return nil end
+
+	local tag = hum:FindFirstChild("target")
+	if not tag then
+		tag = Instance.new("ObjectValue")
+		tag.Name = "target"
+		tag.Value = nil
+		tag.Parent = hum
+	end
+
+	return tag
+end
+
+local function get_aim_align(bot)
+--	print("get_aim_align called")
+
+	local root = bot:FindFirstChild("HumanoidRootPart")
+	if not root then return nil end
+
+	local att = root:FindFirstChild("aim_attachment")
+	if not att then
+		att = Instance.new("Attachment")
+		att.Name = "aim_attachment"
+		att.Parent = root
+	end
+
+	local align = root:FindFirstChild("aim_align")
+	if not align then
+		align = Instance.new("AlignOrientation")
+		align.Name = "aim_align"
+		align.Attachment0 = att
+		align.Mode = Enum.OrientationAlignmentMode.OneAttachment
+		align.RigidityEnabled = false
+		align.MaxTorque = math.huge
+		align.Responsiveness = 17
+		align.Parent = root
+	end
+
+	return align
+end
+
+
 function module.create_soldier(position, owner)
 	-- create bot, set network owner and collision group, prepare attributes and death handler
-	print("company_manager.create_soldier called")
+--	print("company_manager.create_soldier called")
 	local bot = bmusket:Clone()
 	bot.Parent = workspace
 	bot:PivotTo(CFrame.new(position))
@@ -74,7 +119,7 @@ function module.create_soldier(position, owner)
 	local humanoid = bot:FindFirstChildWhichIsA("Humanoid")
 	local root = bot:FindFirstChild("HumanoidRootPart")
 	if not humanoid or not root then
-		print("company_manager.create_soldier: invalid bmusket")
+	--	print("company_manager.create_soldier: invalid bmusket")
 		pcall(function() bot:Destroy() end)
 		return nil
 	end
@@ -104,7 +149,7 @@ function module.create_soldier(position, owner)
 
 	-- death handling: mark slot empty and cleanup
 	humanoid.Died:Connect(function()
-		print("company_manager: soldier died")
+	--	print("company_manager: soldier died")
 		local company = companies[owner]
 		if company then
 			local slot = bot:GetAttribute("slot")
@@ -200,6 +245,32 @@ function module.spawn_company(player, count)
 	companies[player] = company
 end
 
+-- continuously aim bot at its stored target
+local function update_aim(bot)
+
+	local hum = bot:FindFirstChildWhichIsA("Humanoid")
+	local root = bot:FindFirstChild("HumanoidRootPart")
+	if not hum or not root then return end
+
+	local tag = hum:FindFirstChild("target")
+	if not tag or tag.Value == "" then return end
+
+	local target = workspace:FindFirstChild(tag.Value, true)
+	if not target then return end
+
+	local thrp = target:FindFirstChild("HumanoidRootPart")
+	if not thrp then return end
+
+	local align = get_aim_align(bot)
+	if not align then return end
+
+	-- yaw-only look (prevents tilt / physics instability)
+	local from = root.Position
+	local to = Vector3.new(thrp.Position.X, from.Y, thrp.Position.Z)
+
+	align.CFrame = CFrame.lookAt(from, to)
+end
+
 -- expose companies table (read-only usage)
 function module.get_companies()
 	return companies
@@ -279,7 +350,7 @@ local function start_bot_fire_loop(company, bot)
 			-- random idle spacing
 			if state == "idle" or state == "makereadyidle" or state == "aimidle" or state == "reloadidle" then
 				local delaytime = math.random(20, 80) / 100
-				print("fire2 idle delay", delaytime)
+			--	print("fire2 idle delay", delaytime)
 				local t = 0
 				while t < delaytime and company.fireatwill do
 					task.wait(0.05)
@@ -308,7 +379,7 @@ local function start_bot_fire_loop(company, bot)
 			task.wait(0.02)
 		end
 
-		print("fire2 loop ended")
+	--	print("fire2 loop ended")
 	end)
 
 	return thread
@@ -345,5 +416,21 @@ function module.stop_fireatwill(player)
 	company.fireatwill = false
 	company._fire_threads = {}
 end
+
+-- continuously update aiming for all bots with targets
+task.spawn(function()
+	-- keeps bots smoothly facing their targets
+	while true do
+		for _, company in pairs(companies) do
+			for _, bot in pairs(company.slots) do
+				if bot and bot ~= false then
+					update_aim(bot)
+				end
+			end
+		end
+		task.wait(0.05)
+	end
+end)
+
 
 return module

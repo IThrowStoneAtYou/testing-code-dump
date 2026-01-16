@@ -38,7 +38,7 @@ local stoptolerance = 1
 
 -- play_chant: play chant sfx on each bot head
 local function play_chant(company)
-	print("play_chant called")
+--	print("play_chant called")
 	local sounds = chantfolder:GetChildren()
 	if #sounds == 0 then return end
 	for i = 1, company.maxslots do
@@ -57,7 +57,7 @@ end
 
 -- this calculates how wide the company currently is
 local function get_company_half_width(company, spacing)
-	print("get_company_half_width called")
+--	print("get_company_half_width called")
 
 	if not company then return 0 end
 	local columns = math.ceil(company.maxslots / company.rows)
@@ -67,7 +67,7 @@ end
 
 -- this computes formation extents in studs
 local function get_company_extents(company, spacing)
-	print("get_company_extents called")
+--	print("get_company_extents called")
 
 	local columns = math.ceil(company.maxslots / company.rows)
 	local width = columns * spacing.side
@@ -78,7 +78,7 @@ end
 
 -- this recalculates flank offsets when rows or slot counts change
 local function update_anchor_offset(player, company)
-	print("update_anchor_offset called")
+--	print("update_anchor_offset called")
 
 	local mode = anchor_mode[player]
 	if not mode or not company then return end
@@ -163,14 +163,14 @@ local function onchatted(player, msg)
 	end
 
 	if args[1] == "/follow" and company then
-		print("follow called")
+	--	print("follow called")
 		company.follow = true
 		company.anchor_locked = false
 		return
 	end
 
 	if args[1] == "/unfollow" and company then
-		print("unfollow called")
+	--	print("unfollow called")
 
 		local offset = anchor_offsets[player] or CFrame.new()
 
@@ -184,7 +184,7 @@ local function onchatted(player, msg)
 	end
 	
 	if args[1] == "/left" and company then
-		print("anchor set left flank")
+	--	print("anchor set left flank")
 
 		anchor_mode[player] = "left"
 		update_anchor_offset(player, company)
@@ -193,7 +193,7 @@ local function onchatted(player, msg)
 	end
 
 	if args[1] == "/right" and company then
-		print("anchor set right flank")
+	--	print("anchor set right flank")
 
 		anchor_mode[player] = "right"
 		update_anchor_offset(player, company)
@@ -202,7 +202,7 @@ local function onchatted(player, msg)
 	end
 
 	if args[1] == "/back" and company then
-		print("anchor set back")
+	--	print("anchor set back")
 
 		anchor_mode[player] = "back"
 		update_anchor_offset(player, company)

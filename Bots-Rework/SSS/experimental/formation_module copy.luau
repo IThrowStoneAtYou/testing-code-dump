@@ -21,7 +21,7 @@ end
 -- rebuiltslots: preserve bot objects but reorder slots using center-out file order
 function module.rebuiltslots(company)
 	-- rebuild slots with center-out file ordering while preserving bot objects
-	print("formation_module.rebuiltslots called")
+--	print("formation_module.rebuiltslots called")
 	local rows = company.rows
 	local columns = math.ceil(company.maxslots / rows)
 	local fileorder = module.build_file_order(columns)
@@ -55,7 +55,7 @@ function module.rebuiltslots(company)
 end
 
 function module.fillgaps(company)
-	print("formation_module.fillgaps called")
+--	print("formation_module.fillgaps called")
 
 	local rows = company.rows
 	local columns = math.ceil(company.maxslots / rows)

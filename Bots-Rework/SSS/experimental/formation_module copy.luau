@@ -4,8 +4,7 @@ local module = {}
 
 -- build_file_order: return file ordering centered (center, right, left, right2, left2...)
 function module.build_file_order(columns)
-	-- return file ordering centered
---	print("formation_module.build_file_order called", columns)
+-- return file ordering centered
 	local order = {}
 	local center = math.floor((columns - 1) / 2) + 1
 	table.insert(order, center)
@@ -20,8 +19,7 @@ end
 
 -- rebuiltslots: preserve bot objects but reorder slots using center-out file order
 function module.rebuiltslots(company)
-	-- rebuild slots with center-out file ordering while preserving bot objects
---	print("formation_module.rebuiltslots called")
+-- rebuild slots with center-out file ordering while preserving bot objects
 	local rows = company.rows
 	local columns = math.ceil(company.maxslots / rows)
 	local fileorder = module.build_file_order(columns)
@@ -201,8 +199,7 @@ end
 
 -- update_formation: move bots to their anchored positions, use speed boost when far
 function module.update_formation(company, anchor_cframe, spacing, stoptolerance)
-	-- move each bot to calculated slot position relative to anchor and apply distance-based speed boost
---	print("formation_module.update_formation called")
+-- move each bot to calculated slot position relative to anchor and apply distance-based speed boost
 	if not company then return end
 	local columns = math.ceil(company.maxslots / company.rows)
 

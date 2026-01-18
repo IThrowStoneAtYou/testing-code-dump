@@ -28,7 +28,7 @@ companiesfolder.Parent = workspace
 
 -- tag bot model with Team and OwnBy under humanoid
 function module.tag_bot(bot, player)
-	-- attach Team and OwnBy values under bot humanoid for identification
+-- attach Team and OwnBy values under bot humanoid for identification
 
 	local humanoid = bot:FindFirstChildWhichIsA("Humanoid")
 	if not humanoid then return end
@@ -52,7 +52,7 @@ function module.tag_bot(bot, player)
 end
 
 function module.tag_player_team(player, character)
-	-- create Team string under player's humanoid for later use
+-- create Team string under player's humanoid for later use
 
 	local humanoid = character:WaitForChild("Humanoid")
 	local tag = humanoid:FindFirstChild("Team")
@@ -81,8 +81,7 @@ local function ensure_target_value(bot)
 end
 
 local function get_aim_align(bot)
-	--	print("get_aim_align")
-	
+
 	debug.profilebegin("get_aim_align")
 
 	local root = bot:FindFirstChild("HumanoidRootPart")
@@ -125,7 +124,7 @@ local function update_aim(bot)
 	if state ~= "aimidle" and state ~= "toaim" then
 		local align = root:FindFirstChild("aim_align")
 		if align then
-			align.Enabled = false -- hard stop to prevent fighting
+			align.Enabled = false
 		end
 		return
 	end
@@ -157,7 +156,6 @@ end
 
 function module.create_soldier(position, owner)
 	-- create bot, set network owner and collision group, prepare attributes and death handler
-	--	print("company_manager.create_soldier called")
 	debug.profilebegin("create_soldier")
 	
 	local bot = bmusket:Clone()
@@ -167,7 +165,6 @@ function module.create_soldier(position, owner)
 	local humanoid = bot:FindFirstChildWhichIsA("Humanoid")
 	local root = bot:FindFirstChild("HumanoidRootPart")
 	if not humanoid or not root then
-	--	print("company_manager.create_soldier: invalid bmusket")
 		pcall(function() bot:Destroy() end)
 		return nil
 	end
@@ -197,7 +194,6 @@ function module.create_soldier(position, owner)
 
 	-- death handling: mark slot empty and cleanup
 	humanoid.Died:Connect(function()
-	--	print("company_manager: soldier died")
 		local company = companies[owner]
 		if company then
 			local slot = bot:GetAttribute("slot")
@@ -374,7 +370,6 @@ local function start_bot_fire_loop(company, bot)
 			-- random idle spacing
 			if state == "idle" or state == "makereadyidle" or state == "aimidle" or state == "reloadidle" then
 				local delaytime = math.random(20, 80) / 100
-			--	print("fire2 idle delay", delaytime)
 				local t = 0
 				while t < delaytime and company.fireatwill do
 					task.wait(0.05)
@@ -402,8 +397,6 @@ local function start_bot_fire_loop(company, bot)
 
 			task.wait(0.02)
 		end
-
-	--	print("fire2 loop ended")
 	end)
 
 	return thread

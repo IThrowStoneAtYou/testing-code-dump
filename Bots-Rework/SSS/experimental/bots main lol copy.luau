@@ -38,9 +38,9 @@ local stoptolerance = 1
 
 -- play_chant: play chant sfx on each bot head
 local function play_chant(company)
---	print("play_chant called")
 	local sounds = chantfolder:GetChildren()
 	if #sounds == 0 then return end
+
 	for i = 1, company.maxslots do
 		local bot = company.slots[i]
 		if bot and bot ~= false then
@@ -110,7 +110,6 @@ end
 
 -- onchatted: parse chat commands and control manager/formation/musket
 local function onchatted(player, msg)
-	print("company_controller.onchatted called", player.Name, msg)
 	local args = string.split(string.lower(msg), " ")
 	local companies = manager.get_companies()
 	local company = companies[player]
@@ -160,19 +159,14 @@ local function onchatted(player, msg)
 	end
 
 	if args[1] == "/follow" and company then
-	--	print("follow called")
 		company.follow = true
 		company.anchor_locked = false
 		return
 	end
 
 	if args[1] == "/unfollow" and company then
-	--	print("unfollow called")
-
 		local offset = anchor_offsets[player] or CFrame.new()
-
 		company.follow = false
-
 		if player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
 			company.anchor = player.Character.HumanoidRootPart.CFrame * offset
 		end
@@ -181,29 +175,20 @@ local function onchatted(player, msg)
 	end
 	
 	if args[1] == "/left" and company then
-	--	print("anchor set left flank")
-
 		anchor_mode[player] = "left"
 		update_anchor_offset(player, company)
-
 		return
 	end
 
 	if args[1] == "/right" and company then
-	--	print("anchor set right flank")
-
 		anchor_mode[player] = "right"
 		update_anchor_offset(player, company)
-
 		return
 	end
 
 	if args[1] == "/back" and company then
-	--	print("anchor set back")
-
 		anchor_mode[player] = "back"
 		update_anchor_offset(player, company)
-
 		return
 	end
 
@@ -222,6 +207,7 @@ local function onchatted(player, msg)
 				if bot:GetAttribute("musket_state") == nil or bot:GetAttribute("has_bullet") == nil then
 					musket.init(bot); musket.set_idle(bot)
 				end
+				
 				musket.present(bot)
 			end
 		end
@@ -275,7 +261,6 @@ local function onchatted(player, msg)
 	if args[1] == "/fire2" then
 		-- enable continuous fire-at-will for front rank
 		if company then
-		--	print("company_controller: enabling fire2 for", player.Name)
 			manager.start_fireatwill(player)
 		end
 		return
@@ -327,7 +312,6 @@ players.PlayerAdded:Connect(function(player)
 
 			-- if already unfollowed, do nothing (anchor is already fixed)
 			if company.follow == false then
-			--	print("company_controller: already unfollowed, anchor preserved")
 				return
 			end
 
@@ -344,7 +328,6 @@ end)
 
 -- formation scheduler (ticks every formationrate seconds)
 task.spawn(function()
---	print("company_controller: formation scheduler started")
 	while true do
 		local companies = manager.get_companies()
 		for player, _ in pairs(companies) do

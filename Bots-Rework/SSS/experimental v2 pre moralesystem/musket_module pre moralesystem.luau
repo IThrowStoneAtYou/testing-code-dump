@@ -108,10 +108,41 @@ local function play_fire_sound(bot)
 	end)
 end
 
+-- this caches all humanoid models by team for fast targeting
+local team_cache = {}  -- [teamName] = { model1, model2, ... }
+
+-- this rebuilds the cache (cheap, called rarely)
+function module.rebuild_team_cache()
+	-- this clears and rebuilds the humanoid team cache
+	team_cache = {}
+
+	for _, model in ipairs(workspace:GetChildren()) do
+		local hum = model:FindFirstChildWhichIsA("Humanoid")
+		if hum then
+			local team = hum:FindFirstChild("Team")
+			local t = team and team.Value or "none"
+
+			team_cache[t] = team_cache[t] or {}
+			table.insert(team_cache[t], model)
+
+			-- this removes dead humanoids lazily
+			hum.Died:Connect(function()
+				local list = team_cache[t]
+				if not list then return end
+				for i = #list, 1, -1 do
+					if list[i] == model then
+						table.remove(list, i)
+						break
+					end
+				end
+			end)
+		end
+	end
+end
 
 local bullet_speed = 1950        -- studs per second (musket ~ 800–1000)
 local max_lifetime = 10          -- seconds
-local step_rate = 1 / 120       -- simulation step
+local step_rate = 1 / 60       -- simulation step
 
 local function get_predicted_direction(bot, target, origin)
 
@@ -132,9 +163,6 @@ end
 local tracer_event = replicatedstorage:WaitForChild("bullet_tracer")
 
 local function simulate_bullet(bot)
-	-- server-side simulated projectile, no visuals
---	print("simulate_bullet server")
-	debug.profilebegin("simulate_bullet")
 
 	local musket = bot:FindFirstChild("Musket")
 	if not musket then return end
@@ -142,46 +170,35 @@ local function simulate_bullet(bot)
 	local muzzle = musket:FindFirstChild("Muzzle", true)
 	if not muzzle then return end
 
-	local origin
-	if muzzle:IsA("Attachment") then
-		origin = muzzle.WorldPosition
-	else
-		origin = muzzle.Position
-	end
+	local origin = muzzle:IsA("Attachment") and muzzle.WorldPosition or muzzle.Position
+
+	local hum = bot:FindFirstChildWhichIsA("Humanoid")
+	local myteam = hum and hum:FindFirstChild("Team") and hum.Team.Value
 
 	local dir
 
-	-- read stored target
-	local hum = bot:FindFirstChildWhichIsA("Humanoid")
+	-- use predicted target if exists
 	if hum then
 		local tag = hum:FindFirstChild("target")
 		local target = tag and tag.Value
 		if target and target.Parent then
 			local predicted = get_predicted_direction(bot, target, origin)
-			if predicted then
-				dir = predicted
-			end
+			if predicted then dir = predicted end
 		end
 	end
 
-	-- fallback
+	-- fallback direction
 	if not dir then
-	--	print("fallback muzzle direction")
-
-		if muzzle:IsA("Attachment") then
-			dir = muzzle.WorldCFrame.LookVector
-		else
-			dir = muzzle.CFrame.LookVector
-		end
+		dir = muzzle:IsA("Attachment") and muzzle.WorldCFrame.LookVector or muzzle.CFrame.LookVector
 	end
 
-	-- spread
-	local spread = math.rad(1)
+	-- single spread number (degrees)
+	local spread = math.rad(1.5) -- this controls accuracy (lower = more accurate, higher = more random)
+
 	local yaw = (math.random() - 0.5) * spread
 	local pitch = (math.random() - 0.5) * spread
 	dir = (CFrame.lookAt(Vector3.zero, dir) * CFrame.Angles(pitch, yaw, 0)).LookVector
 
-	-- initial state
 	local velocity = dir * bullet_speed
 	local position = origin
 	local life = 0
@@ -190,7 +207,7 @@ local function simulate_bullet(bot)
 	params.FilterType = Enum.RaycastFilterType.Exclude
 	params.FilterDescendantsInstances = { bot }
 
-	-- tell clients to render tracer using same parameters
+	-- send tracer with same physics
 	tracer_event:FireAllClients("start", origin, velocity)
 
 	task.spawn(function()
@@ -206,32 +223,41 @@ local function simulate_bullet(bot)
 
 			if result then
 				local model = result.Instance:FindFirstAncestorOfClass("Model")
-				if model then
-					local hum2 = model:FindFirstChildWhichIsA("Humanoid")
-					if hum2 then
-						local myhum = bot:FindFirstChildWhichIsA("Humanoid")
-						local myteam = myhum and myhum:FindFirstChild("Team")
-						local histeam = hum2:FindFirstChild("Team")
-						if not myteam or not histeam or myteam.Value ~= histeam.Value then
-							hum2:TakeDamage(1000)
+				local hum2 = model and model:FindFirstChildWhichIsA("Humanoid")
+
+				if hum2 then
+					local histeam = hum2:FindFirstChild("Team") and hum2.Team.Value
+
+					-- ignore friendly hits and keep flying
+					if histeam == myteam then
+						params.FilterDescendantsInstances[#params.FilterDescendantsInstances + 1] = model
+					else
+						-- enemy hit
+						hum2:TakeDamage(1000)
+						tracer_event:FireAllClients("hit", position)
+						
+						-- morale shock to target company
+						local owner = players:GetPlayerFromCharacter(model)
+						if owner then
+							replicatedstorage:WaitForChild("morale_event"):Fire(owner, 4)
 						end
+						break
 					end
+				else
+					-- world hit
+					tracer_event:FireAllClients("hit", position)
+					break
 				end
-				
-				tracer_event:FireAllClients("hit", position)
-				
-				break
 			end
 
 			position = nextpos
 			task.wait(dt)
 		end
 	end)
-	debug.profileend()
 end
 
 function module.find_target(bot, range)
---	print("find_target called")
+	-- this finds a random visible enemy using the team cache (fast)
 
 	local root = bot:FindFirstChild("HumanoidRootPart")
 	local humanoid = bot:FindFirstChildWhichIsA("Humanoid")
@@ -245,20 +271,24 @@ function module.find_target(bot, range)
 
 	local candidates = {}
 
-	for _, model in ipairs(workspace:GetChildren()) do
-		local h = model:FindFirstChildWhichIsA("Humanoid")
-		local hrp = model:FindFirstChild("HumanoidRootPart")
-
-		if h and hrp and model ~= bot and h.Health > 0 then
-			local tag = h:FindFirstChild("Team")
-			if not tag or tag.Value ~= myteam then
-				local dir = hrp.Position - root.Position
-				local dist = dir.Magnitude
-
-				if dist <= range then
-					local hit = workspace:Raycast(root.Position, dir, params)
-					if hit and hit.Instance:IsDescendantOf(model) then
-						table.insert(candidates, model)
+	for team, list in pairs(team_cache) do
+		if team ~= myteam then
+			for i = #list, 1, -1 do
+				local model = list[i]
+				if not model or not model.Parent then
+					table.remove(list, i)
+				else
+					local h = model:FindFirstChildWhichIsA("Humanoid")
+					local hrp = model:FindFirstChild("HumanoidRootPart")
+					if h and hrp and h.Health > 0 then
+						local dir = hrp.Position - root.Position
+						local dist = dir.Magnitude
+						if dist <= range then
+							local hit = workspace:Raycast(root.Position, dir, params)
+							if hit and hit.Instance:IsDescendantOf(model) then
+								table.insert(candidates, model)
+							end
+						end
 					end
 				end
 			end
@@ -266,12 +296,13 @@ function module.find_target(bot, range)
 	end
 
 	if #candidates == 0 then return nil end
-	return candidates[ math.random(1, #candidates) ]
+	return candidates[math.random(1, #candidates)]
 end
+
 
 -- this rotates the bot to face a target
 function module.face_target(bot, target)
---	print("face_target called")
+	--	print("face_target called")
 
 	local root = bot:FindFirstChild("HumanoidRootPart")
 	local thrp = target and target:FindFirstChild("HumanoidRootPart")
@@ -303,7 +334,7 @@ end
 
 -- aim: play to_aim -> aim idle
 function module.aim(bot)
---	print("musket.aim")
+	--	print("musket.aim")
 
 	if bot:GetAttribute("musket_state") ~= "makereadyidle" then return end
 
@@ -331,7 +362,7 @@ end
 
 -- fire: simulate shot and transition to reload idle
 function module.fire(bot)
---	print("musket.fire")
+	--	print("musket.fire")
 
 	if bot:GetAttribute("musket_state") ~= "aimidle" then return end
 	if bot:GetAttribute("has_bullet") ~= true then return end
@@ -350,7 +381,7 @@ function module.fire(bot)
 			tag.Value = nil
 		end
 	end
-	
+
 	-- disable aiming immediately
 	local root = bot:FindFirstChild("HumanoidRootPart")
 	local align = root:FindFirstChild("aim_align")

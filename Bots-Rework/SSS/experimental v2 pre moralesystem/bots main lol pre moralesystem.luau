@@ -36,6 +36,8 @@ local anchor_mode = {}   -- "back", "left", "right"
 local formationrate = 0.12
 local stoptolerance = 1
 
+musket.rebuild_team_cache()
+
 -- play_chant: play chant sfx on each bot head
 local function play_chant(company)
 	local sounds = chantfolder:GetChildren()
@@ -60,7 +62,7 @@ local function get_company_half_width(company, spacing)
 	if not company then 
 		return 0 
 	end
-	
+
 	local columns = math.ceil(company.maxslots / company.rows)
 	local width = columns * spacing.side
 	return width * 0.5
@@ -118,14 +120,14 @@ local function onchatted(player, msg)
 		local n = tonumber(args[2])
 		if n then
 			manager.spawn_company(player, n)
-
-			-- default anchor mode to left flank
+			musket.rebuild_team_cache() -- rebuild cache after new bots spawn
+			
 			anchor_mode[player] = "left"
-
+			
 			local companies = manager.get_companies()
 			local company = companies[player]
 			if company then
-				update_anchor_offset(player, company)
+				update_anchor_offset(player, company) 
 			end
 		end
 		return
@@ -135,7 +137,7 @@ local function onchatted(player, msg)
 		manager.destroy_company(player)
 		return
 	end
-	
+
 	if args[1] == "/face" then
 		manager.face_company(player)
 		return
@@ -173,7 +175,7 @@ local function onchatted(player, msg)
 
 		return
 	end
-	
+
 	if args[1] == "/left" and company then
 		anchor_mode[player] = "left"
 		update_anchor_offset(player, company)
@@ -199,6 +201,10 @@ local function onchatted(player, msg)
 
 	-- musket commands (front rank only)
 	if not company then return end
+	
+	-- block orders if company is broken
+	local morale = manager.get_company_morale(player)
+	if morale < 20 then return end
 
 	if args[1] == "/present" then
 		for i = 1, company.maxslots do
@@ -207,7 +213,7 @@ local function onchatted(player, msg)
 				if bot:GetAttribute("musket_state") == nil or bot:GetAttribute("has_bullet") == nil then
 					musket.init(bot); musket.set_idle(bot)
 				end
-				
+
 				musket.present(bot)
 			end
 		end
@@ -225,11 +231,29 @@ local function onchatted(player, msg)
 	end
 
 	if args[1] == "/fire" then
+		-- this fires the front rank with small random delays so it is not perfectly synced
+
 		for i = 1, company.maxslots do
 			local bot = company.slots[i]
 			if bot and bot ~= false and formation.is_front_rank(company, bot) then
-				musket.fire(bot)
+				task.spawn(function()
+					-- random delay to desync manual firing
+					task.wait(math.random(0, 40) / 100)
+
+					if bot:GetAttribute("musket_state") == "aimidle" then
+						musket.fire(bot)
+					end
+				end)
 			end
+		end
+		return
+	end
+	
+	if args[1] == "/fire3" then
+		-- this enables rank by rank rolling fire
+
+		if company then
+			manager.start_rankbyrank(player)
 		end
 		return
 	end
@@ -253,6 +277,7 @@ local function onchatted(player, msg)
 			local bot = company.slots[i]
 			if bot and bot ~= false and formation.is_front_rank(company, bot) then
 				musket.cease(bot)
+				manager.stop_rankbyrank(player)
 			end
 		end
 		return
@@ -289,7 +314,7 @@ players.PlayerAdded:Connect(function(player)
 				physics:SetPartCollisionGroup(obj, "player")
 			end
 		end)
-		
+
 		-- delete company if player left the game.
 		players.PlayerRemoving:Connect(function(player)
 			print("company_controller: player removing", player.Name)
@@ -334,7 +359,7 @@ task.spawn(function()
 			local company = companies[player]
 			if company then
 				local anchor
-				
+
 				local offset = anchor_offsets[player] or CFrame.new()
 
 				if company.follow and not company.anchor_locked then

@@ -9,11 +9,12 @@ local musket = require(script.Parent.musket_module)
 local formation = require(script.Parent.formation_module)
 
 local bmusket = replicatedstorage:WaitForChild("Asset"):WaitForChild("bmusket")
+local morale_event = replicatedstorage:WaitForChild("morale_event")
 
 -- storage for companies keyed by player
 local companies = {}
 
-local max_bots_per_player = 200
+local max_bots_per_player = 250
 
 -- ensure collision groups exist and are configured
 pcall(function() physics:CreateCollisionGroup("soldier") end)
@@ -28,7 +29,7 @@ companiesfolder.Parent = workspace
 
 -- tag bot model with Team and OwnBy under humanoid
 function module.tag_bot(bot, player)
--- attach Team and OwnBy values under bot humanoid for identification
+	-- attach Team and OwnBy values under bot humanoid for identification
 
 	local humanoid = bot:FindFirstChildWhichIsA("Humanoid")
 	if not humanoid then return end
@@ -52,7 +53,7 @@ function module.tag_bot(bot, player)
 end
 
 function module.tag_player_team(player, character)
--- create Team string under player's humanoid for later use
+	-- create Team string under player's humanoid for later use
 
 	local humanoid = character:WaitForChild("Humanoid")
 	local tag = humanoid:FindFirstChild("Team")
@@ -106,14 +107,14 @@ local function get_aim_align(bot)
 		align.Enabled = false 
 		align.Parent = root
 	end
-	
+
 	debug.profileend()
-	
+
 	return align
 end
 
 local function update_aim(bot)
---	print("update_aim") -- debug
+	--	print("update_aim") -- debug
 
 	local hum = bot:FindFirstChildWhichIsA("Humanoid")
 	local root = bot:FindFirstChild("HumanoidRootPart")
@@ -157,7 +158,7 @@ end
 function module.create_soldier(position, owner)
 	-- create bot, set network owner and collision group, prepare attributes and death handler
 	debug.profilebegin("create_soldier")
-	
+
 	local bot = bmusket:Clone()
 	bot.Parent = workspace
 	bot:PivotTo(CFrame.new(position))
@@ -188,24 +189,31 @@ function module.create_soldier(position, owner)
 	-- initialize musket attributes and start idle
 	musket.init(bot)
 	musket.set_idle(bot)
+	
+	-- morale
+	bot:SetAttribute("morale", 100)        -- individual morale
+	bot:SetAttribute("morale_state", "steady") -- steady | shaken | wavering | broken
 
 	-- set default walk speed
 	if humanoid then pcall(function() humanoid.WalkSpeed = 16 end) end
 
 	-- death handling: mark slot empty and cleanup
 	humanoid.Died:Connect(function()
+		-- death causes morale shock to the rest of the company
 		local company = companies[owner]
 		if company then
-			local slot = bot:GetAttribute("slot")
-			if slot and slot > 0 then
-				company.slots[slot] = false
-				company.count = company.count - 1
+			for _, other in pairs(company.slots) do
+				if other and other ~= false then
+					local m = other:GetAttribute("morale") or 100
+					other:SetAttribute("morale", math.clamp(m - 8, 0, 100))
+				end
 			end
 		end
+
 		musket.stop_all(bot)
 		pcall(function() bot:Destroy() end)
 	end)
-	
+
 	debug.profileend()
 
 	return bot
@@ -291,6 +299,83 @@ function module.spawn_company(player, count)
 	companies[player] = company
 end
 
+function module.get_company_morale(player)
+	-- returns average morale of all alive bots
+	local company = companies[player]
+	if not company then return 0 end
+
+	local total = 0
+	local alive = 0
+
+	for _, bot in pairs(company.slots) do
+		if bot and bot ~= false then
+			local m = bot:GetAttribute("morale") or 0
+			total += m
+			alive += 1
+		end
+	end
+
+	if alive == 0 then return 0 end
+	return math.floor(total / alive)
+end
+
+function module.apply_morale_damage(player, amount)
+	-- applies morale loss to every bot in the company
+	local company = companies[player]
+	if not company then return end
+
+	for _, bot in pairs(company.slots) do
+		if bot and bot ~= false then
+			local m = bot:GetAttribute("morale") or 100
+			m = math.clamp(m - amount, 0, 100)
+			bot:SetAttribute("morale", m)
+		end
+	end
+end
+
+morale_event.Event:Connect(function(player, amount)
+	-- receives morale damage from musket hits and applies it to the company
+
+	module.apply_morale_damage(player, amount)
+end)
+
+function module.get_enemy_centroid(company)
+	-- returns the average position of all enemy humanoids
+
+	local sum = Vector3.zero
+	local count = 0
+
+	for _, model in ipairs(workspace:GetChildren()) do
+		local hum = model:FindFirstChildWhichIsA("Humanoid")
+		local root = model:FindFirstChild("HumanoidRootPart")
+
+		if hum and root and hum.Health > 0 then
+			local tag = hum:FindFirstChild("Team")
+			if not tag or tag.Value ~= company.team then
+				sum += root.Position
+				count += 1
+			end
+		end
+	end
+
+	if count == 0 then return nil end
+	return sum / count
+end
+
+function module.route_bot(bot, enemy_point)
+	-- forces a broken bot to run away from the enemy centroid
+
+	local hum = bot:FindFirstChildWhichIsA("Humanoid")
+	local root = bot:FindFirstChild("HumanoidRootPart")
+	if not hum or not root then return end
+
+	local dir = (root.Position - enemy_point).Unit
+	local target = root.Position + dir * 250 -- run 250 studs away
+
+	hum.WalkSpeed = 30
+	hum:MoveTo(target)
+end
+
 -- expose companies table (read-only usage)
 function module.get_companies()
 	return companies
@@ -309,8 +394,19 @@ function module.fillgaps(player)
 	formation.fillgaps(company)
 end
 
+-- this returns which rank a bot is in (1 = front)
+local function get_rank(company, bot)
+	-- simple math: slot index -> rank
+	for i = 1, company.maxslots do
+		if company.slots[i] == bot then
+			return math.floor((i - 1) / math.ceil(company.maxslots / company.rows)) + 1
+		end
+	end
+	return nil
+end
+
 function module.face_company(player)
-	
+
 	local company = companies[player]
 	if not company then return end
 	if not player.Character or not player.Character:FindFirstChild("HumanoidRootPart") then return end
@@ -403,35 +499,165 @@ local function start_bot_fire_loop(company, bot)
 end
 
 function module.start_fireatwill(player)
-	
+	-- this runs a single fire-at-will scheduler with per-bot random idle delays
+
 	local company = companies[player]
-	if not company then return end
-	if company.fireatwill then return end
+	if not company or company.fireatwill then return end
 
 	company.fireatwill = true
-	company._fire_threads = {}
 
-	for i = 1, company.maxslots do
-		local bot = company.slots[i]
-		if bot and bot ~= false then
-			if bot:GetAttribute("musket_state") == nil or bot:GetAttribute("has_bullet") == nil then
-				musket.init(bot)
-				musket.set_idle(bot)
+	company._fire_thread = task.spawn(function()
+		while company.fireatwill do
+			for _, bot in pairs(company.slots) do
+				if bot and bot ~= false and formation.is_front_rank(company, bot) then
+
+					local state = bot:GetAttribute("musket_state")
+
+					if state == "idle" then
+						-- desync make ready
+						task.spawn(function()
+							task.wait(math.random(10, 60) / 100)
+							if company.fireatwill and bot:GetAttribute("musket_state") == "idle" then
+								musket.present(bot)
+							end
+						end)
+
+					elseif state == "makereadyidle" then
+						-- desync aim
+						task.spawn(function()
+							task.wait(math.random(10, 60) / 100)
+							if company.fireatwill and bot:GetAttribute("musket_state") == "makereadyidle" then
+								musket.aim(bot)
+							end
+						end)
+
+					elseif state == "aimidle" and bot:GetAttribute("has_bullet") then
+						-- desync fire
+						task.spawn(function()
+							task.wait(math.random(10, 60) / 100)
+							if company.fireatwill and bot:GetAttribute("musket_state") == "aimidle" then
+								musket.fire(bot)
+							end
+						end)
+
+					elseif state == "reloadidle" then
+						-- desync reload
+						task.spawn(function()
+							task.wait(math.random(20, 90) / 100)
+							if company.fireatwill and bot:GetAttribute("musket_state") == "reloadidle" then
+								musket.reload(bot)
+							end
+						end)
+					end
+				end
 			end
-
-			company._fire_threads[bot] = start_bot_fire_loop(company, bot)
-			task.wait(0.01)
+			task.wait(0.25)
 		end
-	end
+	end)
 end
 
 function module.stop_fireatwill(player)
+	-- this disables fire-at-will loop
 
 	local company = companies[player]
 	if not company then return end
 
 	company.fireatwill = false
-	company._fire_threads = {}
+	if company._fire_thread then
+		task.cancel(company._fire_thread)
+		company._fire_thread = nil
+	end
+end
+
+function module.start_rankbyrank(player)
+	-- one time rolling fire: rank 1 fires, rank 2 presents on rank 1 fire, etc
+
+	local company = companies[player]
+	if not company then return end
+
+	-- reset all bots
+	for _, bot in pairs(company.slots) do
+		if bot and bot ~= false then
+			musket.init(bot)           -- reset musket attributes
+			musket.set_idle(bot)       -- force idle start
+		end
+	end
+
+	task.wait(0.5)
+
+	for rank = 1, company.rows do
+
+		-- present this rank
+		for _, bot in pairs(company.slots) do
+			if bot and bot ~= false and get_rank(company, bot) == rank then
+				if bot:GetAttribute("musket_state") == "idle" then
+					musket.present(bot)   -- start make ready
+				end
+			end
+		end
+
+		-- aim when ready (non blocking)
+		for _, bot in pairs(company.slots) do
+			if bot and bot ~= false and get_rank(company, bot) == rank then
+				task.spawn(function()
+					while true do
+						if bot:GetAttribute("musket_state") == "makereadyidle" then
+							musket.aim(bot) -- go to aim
+							break
+						end
+						task.wait(0.05)
+					end
+				end)
+			end
+		end
+
+		-- fire all bots in this rank exactly once
+		local remaining = {}
+
+		for _, bot in pairs(company.slots) do
+			if bot and bot ~= false and get_rank(company, bot) == rank then
+				remaining[bot] = true
+			end
+		end
+
+		while next(remaining) do
+			for bot in pairs(remaining) do
+				if bot:GetAttribute("musket_state") == "aimidle"
+					and bot:GetAttribute("has_bullet") == true then
+
+					musket.fire(bot)       -- actual fire trigger
+					remaining[bot] = nil   -- mark this bot done
+				end
+			end
+			task.wait(0.05)
+		end
+
+		-- reload in background (does not block next rank)
+		for _, bot in pairs(company.slots) do
+			if bot and bot ~= false and get_rank(company, bot) == rank then
+				task.spawn(function()
+					while true do
+						if bot:GetAttribute("musket_state") == "reloadidle" then
+							musket.reload(bot) -- reload musket
+							break
+						end
+						task.wait(0.1)
+					end
+				end)
+			end
+		end
+
+		task.wait(0.2) -- small spacing before next rank
+	end
+end
+
+function module.stop_rankbyrank(player)
+	-- this stops rank by rank fire
+
+	local company = companies[player]
+	if not company then return end
+
+	company.rankbyrank = false
 end
 
 -- continuous aim updater
@@ -440,11 +666,36 @@ task.spawn(function()
 		for _, company in pairs(companies) do
 			for _, bot in pairs(company.slots) do
 				if bot and bot ~= false then
-					update_aim(bot)
+					
+					-- aiming
+					local state = bot:GetAttribute("musket_state")
+					if state == "aimidle" or state == "toaim" then
+						update_aim(bot)
+					end
+					
+					-- morale
+					local m = bot:GetAttribute("morale") or 100
+					local state
+
+					if m > 70 then state = "steady"
+					elseif m > 40 then state = "shaken"
+					elseif m > 15 then state = "wavering"
+					else state = "broken" end
+
+					bot:SetAttribute("morale_state", state)
+
+					if state == "broken" then
+						-- broken bots stop obeying and flee
+						musket.cease(bot)
+						local enemy = module.get_enemy_centroid(company)
+						if enemy then
+							module.route_bot(bot, enemy)
+						end
+					end
 				end
 			end
 		end
-		task.wait(0.05)
+		task.wait(1)
 	end
 end)
 

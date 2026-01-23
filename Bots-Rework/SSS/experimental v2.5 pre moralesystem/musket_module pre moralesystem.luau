@@ -163,7 +163,7 @@ end
 local tracer_event = replicatedstorage:WaitForChild("bullet_tracer")
 
 local function simulate_bullet(bot)
-
+	-- simulate bullet physics, perform raycast hit logic and detect near-miss events that reduce morale
 	local musket = bot:FindFirstChild("Musket")
 	if not musket then return end
 
@@ -175,9 +175,8 @@ local function simulate_bullet(bot)
 	local hum = bot:FindFirstChildWhichIsA("Humanoid")
 	local myteam = hum and hum:FindFirstChild("Team") and hum.Team.Value
 
-	local dir
-
 	-- use predicted target if exists
+	local dir
 	if hum then
 		local tag = hum:FindFirstChild("target")
 		local target = tag and tag.Value
@@ -192,9 +191,7 @@ local function simulate_bullet(bot)
 		dir = muzzle:IsA("Attachment") and muzzle.WorldCFrame.LookVector or muzzle.CFrame.LookVector
 	end
 
-	-- single spread number (degrees)
-	local spread = math.rad(1.5) -- this controls accuracy (lower = more accurate, higher = more random)
-
+	local spread = math.rad(1.5)
 	local yaw = (math.random() - 0.5) * spread
 	local pitch = (math.random() - 0.5) * spread
 	dir = (CFrame.lookAt(Vector3.zero, dir) * CFrame.Angles(pitch, yaw, 0)).LookVector
@@ -206,6 +203,9 @@ local function simulate_bullet(bot)
 	local params = RaycastParams.new()
 	params.FilterType = Enum.RaycastFilterType.Exclude
 	params.FilterDescendantsInstances = { bot }
+
+	-- for near-miss detection: keep track of models we've already signaled
+	local near_miss_reported = {}
 
 	-- send tracer with same physics
 	tracer_event:FireAllClients("start", origin, velocity)
@@ -221,6 +221,49 @@ local function simulate_bullet(bot)
 			local nextpos = position + velocity * dt
 			local result = workspace:Raycast(position, nextpos - position, params)
 
+			-- check near-miss: test humanoid rootparts close to the segment [position, nextpos]
+			-- this penalizes morale lightly for near misses
+			local near_miss_radius = 4
+			for teamName, list in pairs(team_cache) do
+				for i = #list, 1, -1 do
+					local model = list[i]
+					if not model or not model.Parent then
+						table.remove(list, i)
+					else
+						local h = model:FindFirstChildWhichIsA("Humanoid")
+						local hrp = model:FindFirstChild("HumanoidRootPart")
+						if h and hrp and h.Health > 0 then
+							-- skip self and friendly
+							if model ~= bot and (not h:FindFirstChild("Team") or h.Team.Value ~= myteam) then
+								-- compute distance from segment to hrp
+								local seg = nextpos - position
+								local tohrp = hrp.Position - position
+								local proj = 0
+								local seglen2 = seg.Magnitude * seg.Magnitude
+								if seglen2 > 0 then
+									proj = math.clamp((tohrp:Dot(seg) / seglen2), 0, 1)
+								end
+								local closest = position + seg * proj
+								local d = (hrp.Position - closest).Magnitude
+								if d <= near_miss_radius then
+									-- if not already reported for this model, report a near-miss morale event
+									if not near_miss_reported[model] then
+										near_miss_reported[model] = true
+										-- attempt to find owner and call morale_event (BindabeEvent)
+										local ownerTag = h:FindFirstChild("OwnBy")
+										if ownerTag and ownerTag.Value and players:FindFirstChild(ownerTag.Value) then
+											local plr = players:FindFirstChild(ownerTag.Value)
+											-- near miss small morale shock (keeps same bindable event semantics)
+											replicatedstorage:WaitForChild("morale_event"):Fire(plr, 2)
+										end
+									end
+								end
+							end
+						end
+					end
+				end
+			end
+
 			if result then
 				local model = result.Instance:FindFirstAncestorOfClass("Model")
 				local hum2 = model and model:FindFirstChildWhichIsA("Humanoid")
@@ -235,11 +278,14 @@ local function simulate_bullet(bot)
 						-- enemy hit
 						hum2:TakeDamage(1000)
 						tracer_event:FireAllClients("hit", position)
-						
+
 						-- morale shock to target company
-						local owner = players:GetPlayerFromCharacter(model)
+						local owner = model:FindFirstChildWhichIsA("Humanoid"):FindFirstChild("OwnBy")
 						if owner then
-							replicatedstorage:WaitForChild("morale_event"):Fire(owner, 4)
+							local plr = players:FindFirstChild(owner.Value)
+							if plr then
+								replicatedstorage:WaitForChild("morale_event"):Fire(plr, 4)
+							end
 						end
 						break
 					end
@@ -410,7 +456,7 @@ end
 
 -- cease: stop actions and set appropriate idle state depending on has_bullet
 function module.cease(bot)
-	print("musket.cease")
+	--	print("musket.cease")
 
 	module.stop_all(bot)
 

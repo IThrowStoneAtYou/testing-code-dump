@@ -17,6 +17,21 @@ function module.build_file_order(columns)
 	return order
 end
 
+-- sets the Rank attribute based on the bot's slot position
+function module.apply_rank_from_slot(company, bot)
+	-- determine which row the bot belongs to and store it as Rank
+	if not company or not bot then return end
+
+	local slot = bot:GetAttribute("slot")
+	if not slot then return end
+
+	local columns = math.ceil(company.maxslots / company.rows)
+	local row = math.floor((slot - 1) / columns)
+
+	-- rank is row index + 1 (front rank = 1)
+	bot:SetAttribute("Rank", row + 1)
+end
+
 -- rebuiltslots: preserve bot objects but reorder slots using center-out file order
 function module.rebuiltslots(company)
 	-- rebuild slots with center-out file ordering while preserving bot objects
@@ -27,7 +42,9 @@ function module.rebuiltslots(company)
 	local pool = {}
 	for i = 1, company.maxslots do
 		local bot = company.slots[i]
-		if bot and bot ~= false then table.insert(pool, bot) end
+		if bot and bot ~= false then
+			table.insert(pool, bot)
+		end
 	end
 
 	local newslots = {}
@@ -41,6 +58,10 @@ function module.rebuiltslots(company)
 				if bot then
 					newslots[slot] = bot
 					bot:SetAttribute("slot", slot)
+
+					-- update Rank after slot change
+					module.apply_rank_from_slot(company, bot)
+
 					index += 1
 				else
 					newslots[slot] = false
@@ -52,15 +73,20 @@ function module.rebuiltslots(company)
 	company.slots = newslots
 end
 
-function module.fillgaps(company)
-	-- this compresses bots forward (rows) and inward (columns) without skipping empty columns
-	print("formation_module.fillgaps called")
 
+function module.fillgaps(company)
 	local rows = company.rows
 	local columns = math.ceil(company.maxslots / rows)
 	local slots = company.slots
 
-	-- vertical compression (pull bots forward in each file)
+	-- convert destroyed bots to false
+	for i = 1, #slots do
+		if slots[i] and (slots[i] == false or not slots[i].Parent) then
+			slots[i] = false
+		end
+	end
+
+	-- vertical compression: pull bots forward
 	local changed = true
 	while changed do
 		changed = false
@@ -73,7 +99,10 @@ function module.fillgaps(company)
 						if backslot <= company.maxslots and slots[backslot] and slots[backslot] ~= false then
 							slots[slot] = slots[backslot]
 							slots[backslot] = false
+
 							slots[slot]:SetAttribute("slot", slot)
+							module.apply_rank_from_slot(company, slots[slot])
+
 							changed = true
 							break
 						end
@@ -83,12 +112,10 @@ function module.fillgaps(company)
 		end
 	end
 
-	-- horizontal compression (remove empty columns safely)
+	-- horizontal compression: shift empty columns left
 	local file = 1
 	while file <= columns do
 		local empty = true
-
-		-- check if this column is completely empty
 		for row = 1, rows do
 			local slot = (row - 1) * columns + file
 			if slot <= company.maxslots and slots[slot] and slots[slot] ~= false then
@@ -98,93 +125,26 @@ function module.fillgaps(company)
 		end
 
 		if empty then
-			-- shift all columns behind this one to the left
 			for f = file + 1, columns do
 				for row = 1, rows do
 					local from = (row - 1) * columns + f
 					local to = (row - 1) * columns + (f - 1)
-
 					if from <= company.maxslots then
 						slots[to] = slots[from]
 						if slots[to] and slots[to] ~= false then
 							slots[to]:SetAttribute("slot", to)
+							module.apply_rank_from_slot(company, slots[to])
 						end
 						slots[from] = false
 					end
 				end
 			end
-
-			-- do NOT increment file
-			-- recheck same column index again because new data shifted in
+			columns -= 1
 		else
 			file += 1
 		end
 	end
 end
-
---[[
-function module.fillgaps(company)
---	print("formation_module.fillgaps called")
-
-	local rows = company.rows
-	local columns = math.ceil(company.maxslots / rows)
-	local slots = company.slots
-
-	-- vertical compression
-	local changed = true
-	while changed do
-		changed = false
-		for file = 1, columns do
-			for row = 1, rows do
-				local slot = (row - 1) * columns + file
-				if slot <= company.maxslots and slots[slot] == false then
-					for r = row + 1, rows do
-						local backslot = (r - 1) * columns + file
-						if backslot <= company.maxslots and slots[backslot] and slots[backslot] ~= false then
-							slots[slot] = slots[backslot]
-							slots[backslot] = false
-							slots[slot]:SetAttribute("slot", slot)
-							changed = true
-							break
-						end
-					end
-				end
-			end
-		end
-	end
-
-	-- horizontal compression
-	for file = 1, columns do
-		-- check if entire column is empty
-		local empty = true
-		for row = 1, rows do
-			local slot = (row - 1) * columns + file
-			if slot <= company.maxslots and slots[slot] and slots[slot] ~= false then
-				empty = false
-				break
-			end
-		end
-
-		-- shift all columns behind it left
-		if empty then
-			for f = file + 1, columns do
-				for row = 1, rows do
-					local from = (row - 1) * columns + f
-					local to = (row - 1) * columns + (f - 1)
-
-					if from <= company.maxslots then
-						slots[to] = slots[from]
-						if slots[to] and slots[to] ~= false then
-							slots[to]:SetAttribute("slot", to)
-						end
-						slots[from] = false
-					end
-				end
-			end
-		end
-	end
-end
---[[]]
 
 -- is_front_rank: check if a bot is in front rank (first row)
 function module.is_front_rank(company, bot)
@@ -196,11 +156,21 @@ function module.is_front_rank(company, bot)
 	return slot <= columns
 end
 
--- update_formation: move bots to their anchored positions, use speed boost when far
 function module.update_formation(company, anchor_cframe, spacing, stoptolerance)
-	-- move each bot to calculated slot position relative to anchor and apply distance-based speed boost
+	-- moves bots into formation starting from center file and spreading outward
+
 	if not company then return end
-	local columns = math.ceil(company.maxslots / company.rows)
+
+	local rows = company.rows
+	local columns = math.ceil(company.maxslots / rows)
+	local center_file = math.ceil(columns / 2)
+
+	-- initialize reform timer ONCE per reform
+	if not company._form_start then
+		company._form_start = os.clock()
+	end
+
+	local elapsed = os.clock() - company._form_start
 
 	for slot = 1, company.maxslots do
 		local bot = company.slots[slot]
@@ -208,11 +178,27 @@ function module.update_formation(company, anchor_cframe, spacing, stoptolerance)
 			local humanoid = bot:FindFirstChildWhichIsA("Humanoid")
 			local root = bot:FindFirstChild("HumanoidRootPart")
 			if humanoid and root then
+
+				-- compute row + file
 				local row = math.floor((slot - 1) / columns)
 				local file = ((slot - 1) % columns) + 1
 
+				-- how far this file is from center
+				local file_dist = math.abs(file - center_file)
+
+				-- strict entry delay (controls spread speed)
+				local entry_delay = file_dist * 0.1
+
+				-- not allowed to move yet
+				if elapsed < entry_delay then
+					humanoid:Move(Vector3.zero)
+					humanoid.WalkSpeed = 16
+					continue
+				end
+
+				-- compute target position
 				local cf = anchor_cframe * CFrame.new(
-					(file - (columns + 1) / 2) * spacing.side,
+					(file - center_file) * spacing.side,
 					0,
 					row * spacing.front + spacing.back
 				)
@@ -220,24 +206,20 @@ function module.update_formation(company, anchor_cframe, spacing, stoptolerance)
 				local target = cf.Position
 				local dist = (root.Position - target).Magnitude
 
-				-- movement with speed boost if far from slot
+				-- movement
 				if dist > stoptolerance then
-					-- very far -> sprint, medium -> jog, close -> normal
-					if dist > 25 then
-						pcall(function() humanoid.WalkSpeed = 28 end)
-					elseif dist > 12 then
-						pcall(function() humanoid.WalkSpeed = 23 end)
+					if dist > 30 then
+						humanoid.WalkSpeed = 30
+					elseif dist > 15 then
+						humanoid.WalkSpeed = 24
 					else
-						pcall(function() humanoid.WalkSpeed = 16 end)
+						humanoid.WalkSpeed = 16
 					end
 
 					humanoid:MoveTo(target)
-					bot:SetAttribute("targetx", target.X)
-					bot:SetAttribute("targetz", target.Z)
 				else
-					-- stop and restore default speed
-					pcall(function() humanoid.WalkSpeed = 16 end)
-					pcall(function() humanoid:Move(Vector3.zero) end)
+					humanoid:Move(Vector3.zero)
+					humanoid.WalkSpeed = 16
 				end
 			end
 		end

@@ -121,9 +121,9 @@ local function onchatted(player, msg)
 		if n then
 			manager.spawn_company(player, n)
 			musket.rebuild_team_cache() -- rebuild cache after new bots spawn
-			
+
 			anchor_mode[player] = "left"
-			
+
 			local companies = manager.get_companies()
 			local company = companies[player]
 			if company then
@@ -201,7 +201,7 @@ local function onchatted(player, msg)
 
 	-- musket commands (front rank only)
 	if not company then return end
-	
+
 	-- block orders if company is broken
 	local morale = manager.get_company_morale(player)
 	if morale < 20 then return end
@@ -248,7 +248,7 @@ local function onchatted(player, msg)
 		end
 		return
 	end
-	
+
 	if args[1] == "/fire3" then
 		-- this enables rank by rank rolling fire
 

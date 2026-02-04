@@ -15,24 +15,6 @@ local tags = game:GetService("CollectionService")
 local teammates = {}
 local enemies = {}
 
-local function raycast(origin, endPos, ignoreList)
-	for _,v in pairs(teammates) do
-		table.insert(ignoreList, v)
-	end
-	for _,v in pairs(enemies) do
-		table.insert(ignoreList, v)
-	end
-
-	local rayParams = RaycastParams.new()
-	rayParams.FilterDescendantsInstances = ignoreList
-	rayParams.FilterType = Enum.RaycastFilterType.Exclude
-
-	local direction = (endPos - origin)
-	
-	local result = workspace:Raycast(origin, direction, rayParams)
-	return result
-end
-
 local function refreshEnemiesAndTeammates()
 	teammates = {}
 	enemies = {}

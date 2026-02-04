@@ -285,36 +285,61 @@ local function deactivated()
 	mouseDown = false
 end
 
+local reloadSoundInstance = nil
+local reloadFinishSoundInstance = nil
+
 local function reload()
 	if not reloading and ammo < magSize and toolEquipped then
 		reloading = true
 
 		if config.ReloadMethod == "EntireClip" then
-			if reloadSound then
-				reloadSound:Play()
-				game.ReplicatedStorage.Remotes.Replication.ReplicateSound:FireServer(reloadSound.SoundId, config.ReloadSoundVolume, 1)
+			if config.ReloadSound and config.ReloadSound ~= "" then
+				reloadSoundInstance = createSound(config.ReloadSound, config.ReloadSoundVolume)
+				if reloadSoundInstance then
+					reloadSoundInstance:Play()
+					game.ReplicatedStorage.Remotes.Replication.ReplicateSound:FireServer(reloadSoundInstance.SoundId, config.ReloadSoundVolume, 1)
+				end
 			end
 
 			if reloadAnimation then
 				reloadAnimation:Play()
 			end
 
-			task.wait(config.ReloadSpeed or 3)
+			local reloadTime = config.ReloadSpeed or 3
+			local startTime = tick()
+			repeat
+				task.wait()
+				if not toolEquipped then
+					reloading = false
+					if reloadSoundInstance then reloadSoundInstance:Stop() end
+					return
+				end
+			until tick() - startTime >= reloadTime
+
 			ammo = magSize
 			reloading = false
 
 		elseif config.ReloadMethod == "Individually" then
 			local toReload = magSize - ammo
 			for i = 1, toReload do
+				if not toolEquipped then
+					reloading = false
+					if reloadSoundInstance then reloadSoundInstance:Stop() end
+					if reloadFinishSoundInstance then reloadFinishSoundInstance:Stop() end
+					return
+				end
+
 				if reloadAnimation then
 					reloadAnimation:Play()
 				end
 
-				if reloadSound then
-					local rsound = createSound(config.ReloadSound, config.ReloadSoundVolume)
-					rsound:Play()
-					game.ReplicatedStorage.Remotes.Replication.ReplicateSound:FireServer(rsound.SoundId, config.ReloadSoundVolume, 1)
-					game.Debris:AddItem(rsound, rsound.TimeLength)
+				if config.ReloadSound and config.ReloadSound ~= "" then
+					reloadSoundInstance = createSound(config.ReloadSound, config.ReloadSoundVolume)
+					if reloadSoundInstance then
+						reloadSoundInstance:Play()
+						game.ReplicatedStorage.Remotes.Replication.ReplicateSound:FireServer(reloadSoundInstance.SoundId, config.ReloadSoundVolume, 1)
+						game.Debris:AddItem(reloadSoundInstance, reloadSoundInstance.TimeLength)
+					end
 				end
 
 				task.wait(config.ReloadSpeed or 0.5)
@@ -324,10 +349,12 @@ local function reload()
 				reloadFinishAnimation:Play()
 			end
 
-			if reloadFinishSound then
-				local rfsound = createSound(config.ReloadFinishSound, config.ReloadFinishSoundVolume)
-				rfsound:Play()
-				game.ReplicatedStorage.Remotes.Replication.ReplicateSound:FireServer(rfsound.SoundId, config.ReloadFinishSoundVolume, 1)
+			if config.ReloadFinishSound and config.ReloadFinishSound ~= "" then
+				reloadFinishSoundInstance = createSound(config.ReloadFinishSound, config.ReloadFinishSoundVolume)
+				if reloadFinishSoundInstance then
+					reloadFinishSoundInstance:Play()
+					game.ReplicatedStorage.Remotes.Replication.ReplicateSound:FireServer(reloadFinishSoundInstance.SoundId, config.ReloadFinishSoundVolume, 1)
+				end
 			end
 
 			ammo = magSize
@@ -551,18 +578,30 @@ local function unequipped()
 
 	destroyMobileButtons()
 
+	-- stop any playing reload animation and sound
+	if reloadAnimation and reloadAnimation.IsPlaying then
+		reloadAnimation:Stop()
+	end
+	if reloadSoundInstance then
+		reloadSoundInstance:Stop()
+	end
+	if reloadFinishSoundInstance then
+		reloadFinishSoundInstance:Stop()
+	end
+
 	if idleAnimation then
 		idleAnimation:Stop()
 	end
 
 	userInputService.MouseIconEnabled = true
-
 	scopeOut()
 
 	if gui then
 		gui:Destroy()
 		gui = nil
 	end
+
+	reloading = false
 end
 
 unequipped()

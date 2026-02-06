@@ -1,19 +1,14 @@
 -- inside tool
 -- ToolClient (local)
-task.wait(1)
+--task.wait(0.5)
 
 local tool = script.Parent
 local config = require(tool:WaitForChild('Config'))
 
 local player = game.Players.LocalPlayer
-local character = player.Character or player.CharacterAdded:Wait()
+local character, humanoid, root
+local firingPoint
 
-while character.Parent == nil do
-	character.AncestryChanged:Wait()
-end
-
-local humanoid = character:WaitForChild("Humanoid")
-local root = character:WaitForChild("HumanoidRootPart")
 local mouse = player:GetMouse()
 local camera = workspace.CurrentCamera
 
@@ -70,12 +65,8 @@ local teammates = {}
 local enemies = {}
 
 local bulletParams = RaycastParams.new()
-bulletParams.FilterDescendantsInstances = {character, config.TracerContainer}
+bulletParams.FilterDescendantsInstances = {}
 bulletParams.FilterType = Enum.RaycastFilterType.Exclude
-
-if config.IgnoreTeammates == true then
-	bulletParams.FilterDescendantsInstances = {character, config.TracerContainer, teammates}
-end
 
 local bulletSpeed = config.ProjectileSpeed
 
@@ -85,6 +76,43 @@ behavior.CosmeticBulletTemplate = config.TracerTemplate
 behavior.CosmeticBulletContainer = config.TracerContainer
 behavior.Acceleration = config.ProjectileAcceleration or Vector3.new()
 behavior.MaxDistance = 3000
+
+-- build and apply a safe FilterDescendantsInstances list
+local function updateBulletFilter()
+	-- construct only valid Instance objects for the filter
+	local list = {}
+
+	-- add character if valid
+	if character and typeof(character) == "Instance" then
+		table.insert(list, character)
+	end
+
+	-- add tracer container from config if it's a valid Instance
+	if config and config.TracerContainer and typeof(config.TracerContainer) == "Instance" then
+		table.insert(list, config.TracerContainer)
+	end
+
+	-- if ignoring teammates, add each teammate Instance (not the table)
+	if config and config.IgnoreTeammates == true and teammates then
+		for _, t in ipairs(teammates) do
+			if t and typeof(t) == "Instance" then
+				table.insert(list, t)
+			end
+		end
+	end
+
+	-- apply to bulletParams and the fastCast behavior
+	bulletParams.FilterDescendantsInstances = list
+	bulletParams.FilterType = Enum.RaycastFilterType.Exclude
+
+	-- ensure behavior uses the updated params
+	if behavior then
+		behavior.RaycastParams = bulletParams
+	end
+end
+
+-- initial apply (safe even when character/config not ready)
+updateBulletFilter()
 
 local firingPoint = nil
 
@@ -100,10 +128,21 @@ end
 local RNG = Random.new()
 local TAU = math.pi * 2
 
-local idleAnimation = createAnimation(config.IdleAnimation)
-local fireAnimation = createAnimation(config.FireAnimation)
-local reloadFinishAnimation = createAnimation(config.ReloadFinishAnimation)
-local reloadAnimation = createAnimation(config.ReloadAnimation)
+local idleAnimation
+local fireAnimation
+local reloadFinishAnimation
+local reloadAnimation
+local equipAnimation
+
+local function rebuildAnimations()
+	-- recreate tracks because animator changes on respawn
+	-- this is the only fix i came up with since sensen gun kit is cursed. (probably roblox upd)
+	idleAnimation = createAnimation(config.IdleAnimation)
+	fireAnimation = createAnimation(config.FireAnimation)
+	reloadFinishAnimation = createAnimation(config.ReloadFinishAnimation)
+	reloadAnimation = createAnimation(config.ReloadAnimation)
+	equipAnimation = createAnimation(config.EquipAnimation)
+end
 
 local fireSound = createSound(config.FireSound, config.FireSoundVolume)
 local reloadSound = createSound(config.ReloadSound, config.ReloadSoundVolume)
@@ -120,22 +159,55 @@ local reloading = false
 local ammo = config.MagSize
 local magSize = config.MagSize
 
-local function refreshGui()
-	if gui then
-		gui.ChargesLeft.Text = ammo
-		if ammo <= 0 then
-			gui.ChargesLeft.BackgroundColor3 = Color3.fromRGB(255,0,0)
-		else
-			gui.ChargesLeft.BackgroundColor3 = Color3.fromRGB(0,0,0)
+local function refreshCharacterReferences()
+	character = player.Character or player.CharacterAdded:Wait()
+	if not character then return end
+
+	humanoid = character:WaitForChild("Humanoid")
+	root = character:WaitForChild("HumanoidRootPart")
+
+	-- recreate firing point safely
+	firingPoint = tool:FindFirstChild("FiringPoint", true)
+	if not firingPoint then
+		local handle = tool:FindFirstChild("Handle") or tool:FindFirstChildOfClass("BasePart")
+		if handle then
+			firingPoint = Instance.new("Attachment")
+			firingPoint.Name = "FiringPoint"
+			firingPoint.Parent = handle
 		end
+	end
+
+	-- rebuild animations for the new humanoid
+	rebuildAnimations()
+
+	-- update raycast filter now that character/humanoid changed
+	updateBulletFilter()
+end
+
+-- call initially
+refreshCharacterReferences()
+
+local function refreshGui()
+	if not gui or not gui.Parent then
+		return
+	end
+
+	local label = gui:FindFirstChild("ChargesLeft")
+	if not label then
+		return
+	end
+
+	label.Text = tostring(ammo)
+
+	if ammo <= 0 then
+		label.BackgroundColor3 = Color3.fromRGB(255,0,0)
+	else
+		label.BackgroundColor3 = Color3.fromRGB(0,0,0)
 	end
 end
 
 local function raycast(origin, endPos, ignoreList)
 	for _,v in pairs(teammates) do
-		table.insert(ignoreList, v)
-	end
-	for _,v in pairs(enemies) do
 		table.insert(ignoreList, v)
 	end
 
@@ -164,7 +236,7 @@ local function scopeIn()
 			userInputService.MouseDeltaSensitivity = 0.3
 			camera.FieldOfView = 30
 		end
-		
+
 		if config.AimDownSights then
 			tool.FirstPersonArms:SetAttribute("Aiming", true)
 		end
@@ -177,7 +249,7 @@ local function scopeOut()
 			userInputService.MouseDeltaSensitivity = 1
 			camera.FieldOfView = 70
 		end
-		
+
 		if config.AimDownSights then
 			tool.FirstPersonArms:SetAttribute("Aiming", false)
 		end
@@ -192,15 +264,15 @@ local function performChecksForFiring()
 	if raycast(root.Position, tool.Handle.FiringPoint.WorldPosition, {character, tool}) ~= nil then
 		return
 	end
-	
+
 	if ammo <= 0 then
 		return
 	end
-	
+
 	if reloading then
 		return
 	end
-	
+
 	return true
 end
 
@@ -208,16 +280,31 @@ local function refreshEnemiesAndTeammates()
 	teammates = {}
 	enemies = {}
 
-	for _,v in pairs(workspace:GetChildren()) do
-		if v:IsA("Model") and v:FindFirstChild("Humanoid") then
-			local team = v.Humanoid:GetAttribute("Team")
-			if team == humanoid:GetAttribute("Team") then
-				table.insert(teammates, v)
-			else
-				table.insert(enemies, v)
+	for _, v in ipairs(workspace:GetChildren()) do
+		if v:IsA("Model") then
+			local hum = v:FindFirstChildOfClass("Humanoid")
+			if hum then
+				-- read team attribute defensively
+				local team = hum:GetAttribute("Team") or nil
+
+				-- put model into proper list
+				if team ~= nil and humanoid then
+					-- if our own humanoid doesn't exist yet, treat as enemy for now
+					if humanoid and humanoid:GetAttribute("Team") == team then
+						table.insert(teammates, v)
+					else
+						table.insert(enemies, v)
+					end
+				else
+					-- fallback: unknown teams are enemies
+					table.insert(enemies, v)
+				end
 			end
 		end
 	end
+
+	-- apply the updated teammates list to the raycast filter
+	updateBulletFilter()
 end
 
 local function ricochet(hitPosition, hitNormal, originalNormal)
@@ -246,7 +333,7 @@ local function ricochet(hitPosition, hitNormal, originalNormal)
 			attachment:Destroy()
 		end
 	end)
-	
+
 	if config.FiringMethod == "Projectile" then
 		caster:Fire(hitPosition, direction, bulletSpeed/2, behavior)
 		game.ReplicatedStorage.Remotes.Replication.ReplicateBullet:FireServer(hitPosition, direction, bulletSpeed, behavior, config.TracerTemplate, "Projectile")
@@ -264,14 +351,14 @@ local function hit(hitPart, hitPosition, hitNormal)
 		) 
 
 			and enemyHumanoid.Health > 0 then	
-		
+
 		local multipliers = config.DamageMultipliers
 		local displayDamage = config.Damage
-		
+
 		if multipliers[hitPart.Name] ~= nil then
 			displayDamage = displayDamage * multipliers[hitPart.Name]
 		end
-		
+
 		tool.VerifyHit:FireServer(enemyHumanoid, hitPart)
 		_G.IndicateDamage(displayDamage, false, config.HitSound, config.KillSound, config.DamageIndicationNumber, config.DamageIndicationHitmarker)
 	end
@@ -368,28 +455,55 @@ end
 local function fire()
 	if performChecksForFiring() == nil then return end
 
+	-- apply camera recoil
 	cameraRecoil:shove(Vector3.new(config.VerticalRecoil, config.HorizontalRecoil, 0))
 
 	local origin = firingPoint.WorldPosition
-	local direction = (mouse.Hit.Position - origin)
-
-	if userInputService.TouchEnabled then
-		local viewportPos = camera.ViewportSize/2
-		local unitRay = camera:ViewportPointToRay(viewportPos.x, viewportPos.y, 0)
-		direction = unitRay.Direction
-	end
+	local direction = (mouse.Hit.Position - origin).Unit
 
 	for i = 1, config.Pellets do
 		local spread = config.BulletSpread
-		local directionalCF = CFrame.new(Vector3.new(), direction)			
-		local dir = (directionalCF * CFrame.fromOrientation(0,0,RNG:NextNumber(0,TAU)) * CFrame.fromOrientation(math.rad(RNG:NextNumber(-spread,spread)), math.rad(RNG:NextNumber(-spread,spread)), math.rad(RNG:NextNumber(-spread,spread)))).LookVector
+		local directionalCF = CFrame.new(Vector3.new(), direction)
+		local dir = (directionalCF *
+			CFrame.fromOrientation(0,0,RNG:NextNumber(0,TAU)) *
+			CFrame.fromOrientation(
+				math.rad(RNG:NextNumber(-spread,spread)),
+				math.rad(RNG:NextNumber(-spread,spread)),
+				math.rad(RNG:NextNumber(-spread,spread))
+			)
+		).LookVector
 
 		if config.FiringMethod == "Projectile" then
-			caster:Fire(origin, dir, bulletSpeed, behavior)
-			game.ReplicatedStorage.Remotes.Replication.ReplicateBullet:FireServer(origin, dir, bulletSpeed, behavior, config.TracerTemplate, "Projectile")
+			local shotBehavior = fastCast.newBehavior()
+			shotBehavior.MaxDistance = config.MaxDistance or 3000
+			shotBehavior.CosmeticBulletTemplate = config.TracerTemplate
+			shotBehavior.CosmeticBulletContainer = config.TracerContainer
+			shotBehavior.RaycastParams = behavior.RaycastParams
+			shotBehavior.Acceleration = behavior.Acceleration
+
+			caster:Fire(origin, dir, bulletSpeed, shotBehavior)
+
+			game.ReplicatedStorage.Remotes.Replication.ReplicateBullet:FireServer(
+				origin,
+				dir,
+				bulletSpeed,
+				shotBehavior,
+				config.TracerTemplate,
+				"Projectile",
+				config.MaxDistance  -- pass MaxDistance to client
+			)
 		end
 	end
 
+	-- emit all particle emitters inside firingPoint (muzzle flash, smoke, sparks, etc)
+	for _, obj in ipairs(firingPoint:GetDescendants()) do
+		if obj:IsA("ParticleEmitter") then
+			local count = obj:GetAttribute("EmitCount") or 10
+			obj:Emit(count)
+		end
+	end
+
+	-- play fire sound
 	local randomizedPitch = 1
 	if config.FireSoundAdjustPitch then
 		local base = config.FireSoundPitch * 100
@@ -402,12 +516,14 @@ local function fire()
 		soundClone:Play()
 		game.Debris:AddItem(soundClone, soundClone.TimeLength)
 
-		game.ReplicatedStorage.Remotes.Replication.ReplicateSound:FireServer(soundClone.SoundId, config.FireSoundVolume, randomizedPitch)
+		game.ReplicatedStorage.Remotes.Replication.ReplicateSound:FireServer(
+			soundClone.SoundId,
+			config.FireSoundVolume,
+			randomizedPitch
+		)
 	end
 
-	if fireAnimation then
-		fireAnimation:Play()
-	end
+	if fireAnimation then fireAnimation:Play() end
 
 	ammo = ammo - 1
 	refreshGui()
@@ -418,29 +534,29 @@ local fxFolder = replicatedStorage:WaitForChild("FX"):WaitForChild("Impact")
 
 -- spawn impact FX based on material/type
 local function spawnImpactFX(hitPart, hitPosition, hitNormal)
-	local impactType = "Hit" -- default
-	local fxFolder = replicatedStorage:WaitForChild("FX"):WaitForChild("Impact")
-	local tags = game:GetService("CollectionService")
+	-- determine impact type using tags and material
+	local impactType = "Hit"
+	local tagsService = game:GetService("CollectionService")
 
-	-- humanoid check
-	if hitPart.Parent:FindFirstChild("Humanoid") then
+	-- humanoid hits use "Hit"
+	if hitPart and hitPart.Parent and hitPart.Parent:FindFirstChild("Humanoid") then
 		impactType = "Hit"
 	else
-		-- deflection surface first
-		if tags:HasTag(hitPart, "DeflectionSurface") then
+		-- deflection surfaces take priority
+		if tagsService:HasTag(hitPart, "DeflectionSurface") or tagsService:HasTag(hitPart.Parent, "DeflectionSurface") then
 			impactType = "Metal"
 		else
-			-- tag-based override 
+			-- tag-based overrides from config.RichochetTags
 			local tagFound = false
-			for _, tag in pairs(config.RichochetTags) do
-				if tags:HasTag(hitPart, tag) or tags:HasTag(hitPart.Parent, tag) then
+			for _, tag in ipairs(config.RichochetTags) do
+				if tagsService:HasTag(hitPart, tag) or tagsService:HasTag(hitPart.Parent, tag) then
 					impactType = "Metal"
 					tagFound = true
 					break
 				end
 			end
 
-			-- material mapping
+			-- material mapping fallback
 			if not tagFound then
 				local materialMap = {
 					[Enum.Material.Wood] = "Wood",
@@ -456,37 +572,61 @@ local function spawnImpactFX(hitPart, hitPosition, hitNormal)
 		end
 	end
 
-	-- get the FX folder for the chosen type
+	-- spawn local FX (same logic as before)
+	local fxFolder = replicatedStorage:WaitForChild("FX"):WaitForChild("Impact")
 	local materialFolder = fxFolder:FindFirstChild(impactType)
-	if not materialFolder then return end
+	if materialFolder then
+		-- try use parts inside the folder as templates
+		local parts = {}
+		for _, v in pairs(materialFolder:GetChildren()) do
+			if v:IsA("Part") then
+				table.insert(parts, v)
+			end
+		end
 
-	-- pick a random part inside this material folder
-	local parts = {}
-	for _, v in pairs(materialFolder:GetChildren()) do
-		if v:IsA("Part") then
-			table.insert(parts, v)
+		if #parts > 0 then
+			local chosenPart = parts[math.random(1, #parts)]
+			for _, v in pairs(chosenPart:GetChildren()) do
+				if v:IsA("ParticleEmitter") then
+					local attachment = Instance.new("Attachment")
+					attachment.Parent = workspace.Terrain
+					attachment.WorldCFrame = CFrame.lookAt(hitPosition, hitPosition - (hitPart.Position - hitPosition).Unit)
+					local emitter = v:Clone()
+					emitter.Parent = attachment
+					emitter.Enabled = true
+					emitter:Emit(v:GetAttribute("EmitCount") or 10)
+					emitter.Enabled = false
+					game.Debris:AddItem(attachment, 5)
+				end
+			end
+		else
+			-- fallback: clone emitters directly from materialFolder children if not Parts
+			for _, template in ipairs(materialFolder:GetChildren()) do
+				for _, desc in ipairs(template:GetDescendants()) do
+					if desc:IsA("ParticleEmitter") then
+						local attachment = Instance.new("Attachment")
+						attachment.Parent = workspace.Terrain
+						attachment.WorldCFrame = CFrame.lookAt(hitPosition, hitPosition - (hitPart.Position - hitPosition).Unit)
+						local emitter = desc:Clone()
+						emitter.Parent = attachment
+						emitter.Enabled = true
+						emitter:Emit(desc:GetAttribute("EmitCount") or 10)
+						emitter.Enabled = false
+						game.Debris:AddItem(attachment, 5)
+					end
+				end
+			end
 		end
 	end
-	if #parts == 0 then return end
 
-	local chosenPart = parts[math.random(1, #parts)]
-
-	-- spawn particle emitter(s)
-	for _, v in pairs(chosenPart:GetChildren()) do
-		if v:IsA("ParticleEmitter") then
-			local attachment = Instance.new("Attachment")
-			attachment.Parent = workspace.Terrain
-			--	attachment.WorldPosition = hitPosition
-			attachment.WorldCFrame = CFrame.lookAt(hitPosition, hitPosition - (hitPart.Position - hitPosition).Unit)
-			local emitter = v:Clone()
-			emitter.Parent = attachment
-			emitter.Parent = attachment
-			emitter.Enabled = true           -- enable emitter
-			emitter:Emit()  -- emit particles once
-			emitter.Enabled = false          -- stop continuous emission
-			game.Debris:AddItem(attachment, 5)
-		end
-	end
+	-- replicate impact FX to other players and include the chosen impactType so they can pick correct FX
+	game.ReplicatedStorage.Remotes.Replication.ReplicateFX:FireServer(
+		"impact",
+		hitPosition,
+		CFrame.lookAt(hitPosition, hitPosition + hitNormal),
+		hitPart,
+		impactType
+	)
 end
 
 local function rayHit(cast, result, segmentVelocity, bullet)
@@ -525,12 +665,12 @@ end
 local function lengthChanged(cast, lastPoint, rayDir, displacement, segmentVelocity, bullet)
 	if bullet then
 		local currentPoint = lastPoint + (rayDir * displacement)
-		
+
 		local start = lastPoint + (rayDir * displacement/2)
 		local endPos = currentPoint
-		
+
 		bullet.CFrame = CFrame.lookAt(start, endPos)
-		
+
 		if config.DynamicTracerScaling then
 			local distance = (currentPoint - lastPoint).Magnitude
 			bullet.Size = Vector3.new(config.DynamicTracerScalingSize, config.DynamicTracerScalingSize, distance)
@@ -553,13 +693,11 @@ end
 local function heartbeat()
 	if mouseDown and not reloading and ammo > 0 then
 		local now = tick()
-		
+
 		if now - lastFired > 60/config.Firerate then
 			fire()
 			lastFired = now
 		end
-	elseif ammo <= 0 then
-		reload()
 	end
 end
 
@@ -569,7 +707,7 @@ local function renderStepped(dt)
 			gui.Mouse.Position = UDim2.new(0, mouse.X, 0, mouse.Y)
 		end
 	end
-	
+
 	if toolEquipped then
 		if config.PlayerFacesMouse3rdPerson and not userInputService.TouchEnabled then
 			local pos = mouse.Hit.Position
@@ -577,7 +715,7 @@ local function renderStepped(dt)
 
 			root.CFrame = CFrame.lookAt(root.Position, lookToPosVector)
 		end
-		
+
 		if config.VerticalRecoil > 0 or config.HorizontalRecoil > 0 then
 			local recoilUpdated = cameraRecoil:update(dt)
 			local x,y,z = recoilUpdated.X, recoilUpdated.Y, recoilUpdated.Z
@@ -616,14 +754,14 @@ local function setUpMobileButtons()
 		if config.ZoomEnabled then
 			contextActionService:BindAction("Zoom", mobileContextButtons, true)
 		end
-		
+
 		contextActionService:SetImage("Fire", 'rbxassetid://8961981049')
 		contextActionService:SetPosition("Fire", UDim2.new(1,-70, 0, 10))
 		contextActionService:GetButton("Fire").Size = UDim2.new(0,70,0,70)
-		
+
 		contextActionService:SetImage("Reload", 'rbxassetid://8908047394')
 		contextActionService:SetPosition("Reload", UDim2.new(1,-110,0,-40))
-		
+
 		if config.ZoomEnabled then
 			contextActionService:SetImage("Zoom", 'rbxassetid://8908047094')
 			contextActionService:SetPosition("Zoom", UDim2.new(1,-70,0,-90))
@@ -637,10 +775,29 @@ local function destroyMobileButtons()
 	contextActionService:UnbindAction("Zoom")
 end
 
+local function getGuiTemplate()
+	-- do NOT index script.GUI directly
+	local guiTemplate = script:FindFirstChild("GUI")
+
+	if not guiTemplate then
+		warn("toolclient: GUI missing inside local script")
+		return nil
+	end
+
+	return guiTemplate
+end
+
 local function equipped()
 	toolEquipped = true
 
+	refreshCharacterReferences()
+
 	setUpMobileButtons()
+
+	-- play equip animation once
+	if equipAnimation then
+		equipAnimation:Play()
+	end
 
 	if idleAnimation then
 		idleAnimation:Play(0)
@@ -648,25 +805,32 @@ local function equipped()
 
 	userInputService.MouseIconEnabled = false
 
-	gui = script.GUI:Clone()
-	gui.Parent = player:WaitForChild("PlayerGui")
+	-- safe gui clone
+	local guiTemplate = getGuiTemplate()
+	if guiTemplate then
+		gui = guiTemplate:Clone()
+		gui.Parent = player:WaitForChild("PlayerGui")
 
-	if userInputService.TouchEnabled then
-		gui.IgnoreGuiInset = true
+		if userInputService.TouchEnabled then
+			gui.IgnoreGuiInset = true
+		else
+			gui.IgnoreGuiInset = false
+		end
+
+		refreshGui()
 	else
-		gui.IgnoreGuiInset = false
+		gui = nil
 	end
-
-	refreshGui()
 end
 
 local function unequipped()
+	-- handles full cleanup and stops every animation/sound safely
 	mouseDown = false
 	toolEquipped = false
 
 	destroyMobileButtons()
 
-	-- stop any playing reload animation and sound
+	-- stop reload animation + sounds
 	if reloadAnimation and reloadAnimation.IsPlaying then
 		reloadAnimation:Stop()
 	end
@@ -677,8 +841,14 @@ local function unequipped()
 		reloadFinishSoundInstance:Stop()
 	end
 
+	-- stop idle
 	if idleAnimation then
 		idleAnimation:Stop()
+	end
+
+	-- stop equip animation
+	if equipAnimation and equipAnimation.IsPlaying then
+		equipAnimation:Stop()
 	end
 
 	userInputService.MouseIconEnabled = true
@@ -726,8 +896,33 @@ tool.Unequipped:Connect(unequipped)
 tool.Activated:Connect(activated)
 tool.Deactivated:Connect(deactivated)
 
-if userInputService.TouchEnabled then
-	script.GUI.IgnoreGuiInset = true
-else
-	script.GUI.IgnoreGuiInset = false
+player.CharacterAdded:Connect(function(newCharacter)
+	character = newCharacter
+	humanoid = newCharacter:WaitForChild("Humanoid")
+	root = newCharacter:WaitForChild("HumanoidRootPart")
+
+	-- Reconnect humanoid.Died event for new character
+	humanoid.Died:Connect(unequipped)
+
+	refreshCharacterReferences()
+end)
+
+if player.Character then
+	refreshCharacterReferences()
 end
+
+player.CharacterRemoving:Connect(function()
+	unequipped()
+end)
+
+-- Reinitialize when new character is loaded
+player.CharacterAppearanceLoaded:Connect(function()
+	refreshCharacterReferences()
+	refreshEnemiesAndTeammates()
+end)
+
+local guiTemplate = script:FindFirstChild("GUI")
+if guiTemplate then
+	guiTemplate.IgnoreGuiInset = userInputService.TouchEnabled
+end
+-- end of ToolClient

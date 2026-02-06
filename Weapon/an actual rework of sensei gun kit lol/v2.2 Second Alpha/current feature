@@ -1,6 +1,9 @@
+issues fixed:
 sound are properly replicated.
 more bug fixes.
+
+added:
 muzzle flashes... (still local).
-bullet impact replicated.
+bullet impact replicated. (depending on material)
 
 more structure changes...

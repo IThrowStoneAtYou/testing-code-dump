@@ -1,5 +1,5 @@
 -- inside ServerScriptService
--- ServerWeaponEF
+-- ServerReplicator
 local replicateSound = game.ReplicatedStorage.Remotes.Replication.ReplicateSound
 local replicateBullet = game.ReplicatedStorage.Remotes.Replication.ReplicateBullet
 local replicateFX = game.ReplicatedStorage.Remotes.Replication.ReplicateFX
@@ -67,4 +67,4 @@ replicateFX.OnServerEvent:Connect(function(player, fxType, position, cframe, tar
 	end
 end)
 
--- end of ServerWeaponEF
+-- end of ServerReplicator

@@ -1,5 +1,5 @@
 -- inside StarterPlayerScripts
--- ClientWeaponEF (local)
+-- ClientReplicator (local)
 local replicateSound = game.ReplicatedStorage.Remotes.Replication.ReplicateSound
 local replicateFX = game.ReplicatedStorage.Remotes.Replication.ReplicateFX
 local replicatedStorage = game.ReplicatedStorage
@@ -142,3 +142,5 @@ replicateBullet.OnClientEvent:Connect(replicate)
 caster.LengthChanged:Connect(lengthChanged)
 caster.CastTerminating:Connect(castTerminating)
 replicateSound.OnClientEvent:Connect(playSound)
+
+-- end of ClientReplicator

@@ -22,6 +22,8 @@ local noobpath = require(replicatedstorage.Modules:WaitForChild("NoobPath"))
 local noobpath_factory = require(replicatedstorage.Modules:WaitForChild("noobpath_factory"))
 local movementAnim = require(replicatedstorage.Modules:WaitForChild("movementAnim"))
 
+local tracer_event = replicatedstorage.Remotes.Replication:WaitForChild("BotsBulletFx")
+
 -- : shared asset references
 local tracer_template = replicatedstorage:WaitForChild("FX"):WaitForChild("Tracer")
 local tracer_container = workspace:WaitForChild("Tracers")
@@ -52,6 +54,12 @@ end)
 players.PlayerRemoving:Connect(function()
 	schedule_update_all_filters()
 end)
+
+local _next_cast_id = 0
+local function generate_cast_id()
+	_next_cast_id += 1
+	return _next_cast_id
+end
 
 --  create a controller for a bot model (requires settings table)
 function module.create(bot_model, settings)
@@ -107,6 +115,7 @@ function module.create(bot_model, settings)
 		idle_anim_id = 180435571,
 		walk_anim_id = 180426354
 	})
+	
 	anim_controller:start()
 	self._anim_controller = anim_controller
 
@@ -141,8 +150,12 @@ function module.create(bot_model, settings)
 
 	local behavior = fastcast.newBehavior()
 	behavior.MaxDistance = self.settings.max_distance or 4000
-	behavior.CosmeticBulletTemplate = tracer_template
-	behavior.CosmeticBulletContainer = tracer_container
+--	behavior.CosmeticBulletTemplate = tracer_template
+--	behavior.CosmeticBulletContainer = tracer_container
+	
+	behavior.CosmeticBulletTemplate = nil
+	behavior.CosmeticBulletContainer = nil
+	
 	behavior.AutoIgnoreContainer = true
 
 	self._caster = caster
@@ -399,7 +412,26 @@ function module.create(bot_model, settings)
 	end
 
 	self._cosmetics = {}
+	
+	caster.RayHit:Connect(function(active_cast, raycast_result)
+		if not raycast_result then return end
 
+		local inst = raycast_result.Instance
+		local hum = get_humanoid_from_instance(inst)
+
+		if hum then
+			local hit_char = hum.Parent
+			if not is_same_team(self.bot, hit_char) then
+				pcall(function()
+					hum:TakeDamage(self.settings.damage or 1)
+				end)
+			end
+		end
+
+		spawn_impact_fx(inst, raycast_result.Position, raycast_result.Normal)
+	end)
+	
+	--[[
 	--  FastCast RayHit handler - apply damage (only to enemies), spawn impact FX, cleanup tracer
 	caster.RayHit:Connect(function(active_cast, raycast_result, segment_velocity, cosmetic)
 		-- record cosmetic for later cleanup
@@ -423,6 +455,8 @@ function module.create(bot_model, settings)
 			pcall(function() cosmetic:Destroy() end)
 		end
 	end)
+	
+	--[[]]
 
 	--  handle pierce event (no-op placeholder)
 	caster.RayPierced:Connect(function()
@@ -447,7 +481,20 @@ function module.create(bot_model, settings)
 			end)
 		end
 	end)
-
+	
+	caster.CastTerminating:Connect(function(active_cast)
+		for i = #self.active_casts, 1, -1 do
+			local entry = self.active_casts[i]
+			if entry.cast == active_cast then
+				-- notify clients to stop tracer using cast ID
+				tracer_event:FireAllClients("stop", entry.id)
+				table.remove(self.active_casts, i)
+				break
+			end
+		end
+	end)
+	
+	--[[
 	--  cleanup when cast terminates (remove active cast and destroy cosmetic)
 	caster.CastTerminating:Connect(function(active_cast)
 		-- remove from active_casts array
@@ -498,6 +545,7 @@ function module.create(bot_model, settings)
 			destroy_if_valid(active_cast._CosmeticBulletObject)
 		end
 	end)
+	--[[]]
 
 	--  LOS raycast params for is_visible checks (excludes self and tracers)
 	local los_params = RaycastParams.new()
@@ -541,7 +589,73 @@ function module.create(bot_model, settings)
 
 		return false
 	end
+	
+	local function fire_at_target(target_char)
+		if not self.alive then return end
+		if self.reloading then return end
+		if (self.current_ammo or 0) <= 0 then
+			do_reload()
+			return
+		end
 
+		local now = os.clock()
+		local fire_interval = 60 / (self.settings.firerate or 600)
+		if now - self.last_fire_time < fire_interval then return end
+		self.last_fire_time = now
+
+		local target_hrp = target_char and target_char:FindFirstChild("HumanoidRootPart")
+		if not target_hrp then return end
+
+		local origin = firing_point and firing_point.WorldPosition or humanoid_root.Position
+		local look_dir = (target_hrp.Position - humanoid_root.Position)
+		if look_dir.Magnitude > 0 then
+			origin = origin + look_dir.Unit * 0.5
+		end
+
+		if not is_visible(target_char, origin) then return end
+
+		local dir = (target_hrp.Position - origin)
+		if dir.Magnitude == 0 then return end
+		local dir_unit = dir.Unit
+
+		-- play firing animation
+		pcall(function() fire_anim_track:Play() end)
+
+		-- play firing sound
+		local fire_sound = Instance.new("Sound", handle)
+		fire_sound.SoundId = "rbxassetid://" .. tostring(self.settings.fire_sound_id or 0)
+		fire_sound.Volume = self.settings.fire_sound_volume or 0.4
+		fire_sound.RollOffMode = Enum.RollOffMode.Linear
+		fire_sound.RollOffMinDistance = 5
+		fire_sound.RollOffMaxDistance = 300
+		fire_sound:Play()
+		debris:AddItem(fire_sound, 5)
+
+		local speed = self.settings.projectile_speed or 3000
+
+		for i = 1, (self.settings.pellets or 1) do
+			local shot_dir = random_spread_direction(dir_unit)
+
+			local ok, active = pcall(function()
+				return caster:Fire(origin, shot_dir, speed, behavior)
+			end)
+
+			if ok and active then
+				local cast_id = generate_cast_id()
+				table.insert(self.active_casts, {id = cast_id, cast = active})
+
+				-- notify clients to spawn tracer (use cast ID, not object)
+				tracer_event:FireAllClients("start", cast_id, origin, shot_dir, speed)
+			end
+		end
+
+		self.current_ammo -= 1
+		if self.current_ammo <= 0 then
+			do_reload()
+		end
+	end
+	
+	--[[
 	--  fire a single shot (LOS gated, respects ammo and firerate)
 	local function fire_at_target(target_char)
 		if not self.alive then return end
@@ -630,6 +744,7 @@ function module.create(bot_model, settings)
 			do_reload() 
 		end
 	end
+	--[[]]
 
 	--  create noobpath instance with safe callbacks (wrap humanoid MoveTo/Jump)
 	local function create_noobpath()

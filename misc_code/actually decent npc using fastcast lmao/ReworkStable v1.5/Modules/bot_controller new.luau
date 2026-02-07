@@ -12,8 +12,8 @@ local runservice = game:GetService("RunService")
 local collectionservice = game:GetService("CollectionService")
 local debris = game:GetService("Debris")
 local players = game:GetService("Players")
-
 local PhysicsService = game:GetService("PhysicsService")
+
 local BOT_GROUP = "Bots"
 
 -- modules 
@@ -24,16 +24,17 @@ local movementAnim = require(replicatedstorage.Modules:WaitForChild("movementAni
 
 local tracer_event = replicatedstorage.Remotes.Replication:WaitForChild("BotsBulletFx")
 
--- : shared asset references
+-- shared asset references
 local tracer_template = replicatedstorage:WaitForChild("FX"):WaitForChild("Tracer")
 local tracer_container = workspace:WaitForChild("Tracers")
 local fx_folder = replicatedstorage:WaitForChild("FX"):WaitForChild("Impact")
 local fx_sound_root = replicatedstorage:WaitForChild("FX"):WaitForChild("ImpactSound")
+local bot_stuff_root = replicatedstorage:WaitForChild("FX"):WaitForChild("Bot_stuff")
 
 -- registry for controllers so global events can refresh filters
 local controllers = {}
 
---  schedule update of bullet filters for all controllers (deferred, safe)
+-- schedule update of bullet filters for all controllers (deferred, safe)
 local function schedule_update_all_filters()
 	task.defer(function()
 		for _, ctrl in ipairs(controllers) do
@@ -44,7 +45,7 @@ local function schedule_update_all_filters()
 	end)
 end
 
---  refresh filters when players spawn/leave so teams are excluded from bullets
+-- refresh filters when players spawn/leave so teams are excluded from bullets
 players.PlayerAdded:Connect(function(plr)
 	plr.CharacterAdded:Connect(function()
 		schedule_update_all_filters()
@@ -61,16 +62,24 @@ local function generate_cast_id()
 	return _next_cast_id
 end
 
---  create a controller for a bot model (requires settings table)
+-- create a controller for a bot model (requires settings table)
 function module.create(bot_model, settings)
 	assert(bot_model and bot_model:IsA("Model"), "bot_controller.create: bot_model must be a Model")
 	assert(type(settings) == "table", "bot_controller.create: settings table required")
+
+	-- if a controller already exists for this bot, return it to avoid double-creation
+	for _, existing in ipairs(controllers) do
+		if existing and existing.bot == bot_model then
+			-- return existing controller instead of creating a duplicate
+			return existing
+		end
+	end
 
 	local self = {}
 	self.bot = bot_model
 	self.settings = settings
 	self.alive = true
-	self.active_casts = {}
+	self.active_casts = {} -- stores {id = cast_id, cast = active_cast}
 	self.heartbeat_conn = nil
 	self.path = nil
 	self.target_char = nil
@@ -80,19 +89,20 @@ function module.create(bot_model, settings)
 	self.current_ammo = self.settings.mag_size or 0
 	self.reloading = false
 	self.last_fire_time = 0
+	self._cosmetics = {} -- map active_cast -> cosmetic object (if any)
 
-	--  required bot parts 
+	-- required bot parts
 	local humanoid = self.bot:WaitForChild("Humanoid")
 	local humanoid_root = self.bot:WaitForChild("HumanoidRootPart")
 	local handle = self.bot:WaitForChild("Handle")
 	local firing_point = handle:WaitForChild("FiringPoint")
 
-	--  assign team attribute automatically if provided in settings
+	-- assign team attribute automatically if provided in settings
 	if self.settings.team then
 		humanoid:SetAttribute("Team", self.settings.team)
 	end
 
-	--  animator + animation track helper
+	-- animator + animation track helper
 	local animator = humanoid:FindFirstChildOfClass("Animator")
 	if not animator then
 		animator = Instance.new("Animator")
@@ -100,6 +110,7 @@ function module.create(bot_model, settings)
 	end
 
 	local function create_anim_track(animator_obj, anim_id)
+		-- create and return an AnimationTrack for given animation id
 		local anim = Instance.new("Animation")
 		anim.AnimationId = "rbxassetid://" .. tostring(anim_id)
 		return animator_obj:LoadAnimation(anim)
@@ -115,34 +126,37 @@ function module.create(bot_model, settings)
 		idle_anim_id = 180435571,
 		walk_anim_id = 180426354
 	})
-	
+
 	anim_controller:start()
 	self._anim_controller = anim_controller
 
-	-- create collision group if missing
+	-- create collision group if missing (keep bots not colliding with themselves)
 	pcall(function()
-		if not table.find(PhysicsService:GetCollisionGroups(), BOT_GROUP) then
+		local found = false
+		for _, g in ipairs(PhysicsService:GetCollisionGroups()) do
+			if g.name == BOT_GROUP or g.Name == BOT_GROUP then
+				found = true
+				break
+			end
+		end
+		if not found then
 			PhysicsService:CreateCollisionGroup(BOT_GROUP)
 			PhysicsService:CollisionGroupSetCollidable(BOT_GROUP, BOT_GROUP, false)
 		end
 	end)
 
-	-- assign all BaseParts in bot model to the collision group
+	-- assign collision group and ensure parts are unanchored (do not call SetNetworkOwner to avoid engine warnings)
 	for _, part in ipairs(self.bot:GetDescendants()) do
 		if part:IsA("BasePart") then
-			PhysicsService:SetPartCollisionGroup(part, BOT_GROUP)
-			part.Anchored = false
+			pcall(function()
+				PhysicsService:SetPartCollisionGroup(part, BOT_GROUP)
+			end)
+			-- un-anchor to allow physics; avoid touching network ownership API
+			pcall(function() part.Anchored = false end)
 		end
 	end
 
-	--  ensure bot model is server-owned to prevent client physics issues
-	for _, part in ipairs(self.bot:GetDescendants()) do
-		if part:IsA("BasePart") then
-			part:SetNetworkOwner(nil)
-		end
-	end
-
-	--  fastcast setup (per controller) and cosmetic tracer behavior
+	-- fastcast setup (per controller) and cosmetic tracer behavior
 	local caster = fastcast.new()
 	caster.VisualizeCasts = true
 	caster.SimulateBeforePhysics = false
@@ -150,17 +164,14 @@ function module.create(bot_model, settings)
 
 	local behavior = fastcast.newBehavior()
 	behavior.MaxDistance = self.settings.max_distance or 4000
---	behavior.CosmeticBulletTemplate = tracer_template
---	behavior.CosmeticBulletContainer = tracer_container
-	
 	behavior.CosmeticBulletTemplate = nil
 	behavior.CosmeticBulletContainer = nil
-	
 	behavior.AutoIgnoreContainer = true
 
 	self._caster = caster
 	self._behavior = behavior
 
+	-- when humanoid dies, stop controller and clear state (does not remove model itself)
 	humanoid.Died:Connect(function()
 		if not self.alive then return end
 
@@ -179,18 +190,32 @@ function module.create(bot_model, settings)
 			self.path = nil
 		end
 
-		-- stop anim (movement)
+		-- stop anim
 		if anim_controller then
 			anim_controller:stop()
 		end
 
-		-- clear references
+		-- terminate active casts cleanly
 		for i = #self.active_casts, 1, -1 do
+			local entry = self.active_casts[i]
+			if entry and entry.cast and entry.cast.Terminate then
+				pcall(function() entry.cast:Terminate() end)
+			end
 			self.active_casts[i] = nil
+		end
+
+		-- destroy any cosmetics left
+		for cast_key, cos in pairs(self._cosmetics) do
+			pcall(function()
+				if cos and cos.Parent then
+					cos:Destroy()
+				end
+			end)
+			self._cosmetics[cast_key] = nil
 		end
 	end)
 
-	--  team helpers use humanoid attribute "Team"
+	-- team helpers use humanoid attribute "Team"
 	local function get_team_from_model(model)
 		if not model then return nil end
 		local hum = model:FindFirstChildOfClass("Humanoid")
@@ -206,7 +231,7 @@ function module.create(bot_model, settings)
 		return team_a == team_b
 	end
 
-	--  collect instances to ignore in raycasts (teammates, self, tracer container)
+	-- collect instances to ignore in raycasts (teammates, self, tracer container)
 	local function build_team_ignore_list()
 		local ignore = { self.bot, tracer_container }
 		local my_team = get_team_from_model(self.bot)
@@ -233,13 +258,12 @@ function module.create(bot_model, settings)
 		return ignore
 	end
 
-	--  expose bullet filter update (makes FastCast ignore teammates)
+	-- expose bullet filter update (makes FastCast ignore teammates)
 	function self:update_bullet_filter()
 		local params = RaycastParams.new()
 		params.FilterType = Enum.RaycastFilterType.Exclude
 		params.IgnoreWater = true
 		params.FilterDescendantsInstances = build_team_ignore_list()
-
 		-- attach to behavior safely
 		self._behavior.RaycastParams = params 
 	end
@@ -253,7 +277,7 @@ function module.create(bot_model, settings)
 		warn("Failed to update bullet filter:", err)
 	end
 
-	--  utility to find humanoid from any instance (returns humanoid or nil)
+	-- utility to find humanoid from any instance (returns humanoid or nil)
 	local function get_humanoid_from_instance(inst)
 		if not inst then return nil end
 		local parent = inst.Parent
@@ -268,30 +292,78 @@ function module.create(bot_model, settings)
 		return nil
 	end
 
-	--  compute random spread direction inside a cone (degrees in settings.bullet_spread)
-	local function random_spread_direction(direction)
-		local spread_deg = self.settings.bullet_spread or 0
-		local spread_rad = math.rad(spread_deg)
-		local up = Vector3.new(0, 1, 0)
+	-- clone folder contents into a parent
+	local function clone_folder_contents(source_folder, target_parent)
+		for _, child in ipairs(source_folder:GetChildren()) do
+			child:Clone().Parent = target_parent
+		end
+	end
 
+	-- pick a random subfolder variant and clone its contents - used for outfit/accessory variant application
+	local function random_subfolder_clone(category_name, bot_model)
+		local category_folder = bot_stuff_root:FindFirstChild(category_name)
+		if not category_folder then
+			return
+		end
+
+		local variant_name = settings[category_name]
+		if not variant_name then
+			return
+		end
+
+		local variant_folder = category_folder:FindFirstChild(variant_name)
+		if not variant_folder then
+			return
+		end
+
+		local subfolders = {}
+		for _, child in ipairs(variant_folder:GetChildren()) do
+			if child:IsA("Folder") then
+				table.insert(subfolders, child)
+			end
+		end
+
+		if #subfolders == 0 then
+			return
+		end
+
+		local chosen = subfolders[math.random(1, #subfolders)]
+		clone_folder_contents(chosen, bot_model)
+	end
+
+	random_subfolder_clone("Outfit", bot_model)
+	random_subfolder_clone("Accessory", bot_model)
+
+	-- compute a spread direction biased by accuracy (returns unit vector)
+	local function random_spread_direction(direction)
+		local spread_deg = self.settings.bullet_spread or 2
+		local spread_rad = math.rad(spread_deg)
+
+		local accuracy = math.clamp(self.settings.accuracy or 0.8, 0, 1)
+
+		local up = Vector3.new(0,1,0)
 		if math.abs(direction:Dot(up)) > 0.999 then
-			up = Vector3.new(1, 0, 0)
+			up = Vector3.new(1,0,0)
 		end
 
 		local right = direction:Cross(up).Unit
 		local forward = right:Cross(direction).Unit
+
 		local u = math.random()
 		local v = math.random()
-		local theta = math.acos(1 - u * (1 - math.cos(spread_rad)))
+
+		local theta = math.acos(1 - u * (1 - math.cos(spread_rad)) * (1 - accuracy))
 		local phi = 2 * math.pi * v
+
 		local x = math.sin(theta) * math.cos(phi)
 		local y = math.sin(theta) * math.sin(phi)
 		local z = math.cos(theta)
+
 		local world_vec = (right * x) + (forward * y) + (direction * z)
 		return world_vec.Unit
 	end
 
-	--  reload sequence (blocks firing), plays animation and sound
+	-- reload sequence (blocks firing), plays animation and sound
 	local function do_reload()
 		if self.reloading then return end
 		self.reloading = true
@@ -315,7 +387,7 @@ function module.create(bot_model, settings)
 		end)
 	end
 
-	--  play a 3D impact sound at the world position
+	-- play a 3D impact sound at the world position
 	local function play_impact_sound(position, impact_type)
 		local folder = fx_sound_root:FindFirstChild(impact_type) or fx_sound_root:FindFirstChild("Hit")
 		if not folder then return end
@@ -342,8 +414,8 @@ function module.create(bot_model, settings)
 
 		debris:AddItem(attach, chosen.TimeLength > 0 and chosen.TimeLength or 4)
 	end
-	
-	--  spawn impact particles (emit then cleanup)
+
+	-- spawn impact particles (emit then cleanup)
 	local function spawn_impact_fx(hit_part, hit_position, hit_normal)
 		if not hit_part then return end
 
@@ -411,8 +483,7 @@ function module.create(bot_model, settings)
 		play_impact_sound(hit_position, impact_type)
 	end
 
-	self._cosmetics = {}
-	
+	-- FastCast RayHit: apply damage (only to enemies), spawn impact FX
 	caster.RayHit:Connect(function(active_cast, raycast_result)
 		if not raycast_result then return end
 
@@ -430,40 +501,13 @@ function module.create(bot_model, settings)
 
 		spawn_impact_fx(inst, raycast_result.Position, raycast_result.Normal)
 	end)
-	
-	--[[
-	--  FastCast RayHit handler - apply damage (only to enemies), spawn impact FX, cleanup tracer
-	caster.RayHit:Connect(function(active_cast, raycast_result, segment_velocity, cosmetic)
-		-- record cosmetic for later cleanup
-		if active_cast and cosmetic then
-			self._cosmetics[active_cast] = cosmetic
-		end
 
-		if not raycast_result then return end
-		local inst = raycast_result.Instance
-		local hum = get_humanoid_from_instance(inst)
-		if hum then
-			local hit_char = hum.Parent
-			if not is_same_team(self.bot, hit_char) then
-				pcall(function() hum:TakeDamage(self.settings.damage or 1) end)
-			end
-		end
-		spawn_impact_fx(inst, raycast_result.Position, raycast_result.Normal)
-
-		-- cosmetic may be destroyed immediately on hit; be defensive
-		if cosmetic and cosmetic.Parent then
-			pcall(function() cosmetic:Destroy() end)
-		end
-	end)
-	
-	--[[]]
-
-	--  handle pierce event (no-op placeholder)
+	-- handle pierce event (no-op placeholder)
 	caster.RayPierced:Connect(function()
-		-- nein
+		-- intentionally left blank
 	end)
 
-	--  update tracer cosmetic as length changes
+	-- update tracer cosmetic as length changes (record cosmetic for cleanup)
 	caster.LengthChanged:Connect(function(active_cast, last_point, ray_dir, displacement, segment_velocity, cosmetic)
 		-- record cosmetic if provided (sometimes created later and surfaced here)
 		if active_cast and cosmetic then
@@ -481,30 +525,21 @@ function module.create(bot_model, settings)
 			end)
 		end
 	end)
-	
+
+	-- cleanup when cast terminates: remove active cast, notify clients, and destroy cosmetic
 	caster.CastTerminating:Connect(function(active_cast)
+		-- remove from active_casts array and notify clients
 		for i = #self.active_casts, 1, -1 do
 			local entry = self.active_casts[i]
-			if entry.cast == active_cast then
+			if entry and entry.cast == active_cast then
 				-- notify clients to stop tracer using cast ID
 				tracer_event:FireAllClients("stop", entry.id)
 				table.remove(self.active_casts, i)
 				break
 			end
 		end
-	end)
-	
-	--[[
-	--  cleanup when cast terminates (remove active cast and destroy cosmetic)
-	caster.CastTerminating:Connect(function(active_cast)
-		-- remove from active_casts array
-		for i = #self.active_casts, 1, -1 do
-			if self.active_casts[i] == active_cast then
-				table.remove(self.active_casts, i)
-			end
-		end
 
-		-- 1) prefer the explicit map if we recorded the cosmetic earlier
+		-- attempt to find and destroy any cosmetic object associated with the active_cast
 		local function destroy_if_valid(obj)
 			if not obj then return end
 			if obj.Parent == nil then return end
@@ -516,7 +551,7 @@ function module.create(bot_model, settings)
 			cosmetic = self._cosmetics[active_cast]
 		end
 
-		-- 2) fallback checks if map didn't have it
+		-- fallback attempts to locate cosmetic on active_cast structure
 		if not cosmetic and active_cast then
 			local ok, rayinfo = pcall(function() return active_cast.CastRayInfo end)
 			if ok and rayinfo and rayinfo.CosmeticBulletObject then
@@ -532,7 +567,6 @@ function module.create(bot_model, settings)
 			cosmetic = active_cast._CosmeticBulletObject
 		end
 
-		-- destroy any cosmetic we found
 		destroy_if_valid(cosmetic)
 
 		-- clear map entry if present
@@ -540,20 +574,19 @@ function module.create(bot_model, settings)
 			self._cosmetics[active_cast] = nil
 		end
 
-		-- in some edge cases behavior may also store a top-level CosmeticBulletObject on behavior/active; attempt again defensively
+		-- in some edge cases behavior may also store a top-level CosmeticBulletObject on active_cast; attempt again defensively
 		if active_cast and active_cast._CosmeticBulletObject then
 			destroy_if_valid(active_cast._CosmeticBulletObject)
 		end
 	end)
-	--[[]]
 
-	--  LOS raycast params for is_visible checks (excludes self and tracers)
+	-- LOS raycast params for is_visible checks (excludes self and tracers)
 	local los_params = RaycastParams.new()
 	los_params.FilterType = Enum.RaycastFilterType.Exclude
 	los_params.IgnoreWater = true
 	los_params.FilterDescendantsInstances = build_team_ignore_list()
 
-	--  check if any sample point on target is visible from origin
+	-- check if any sample point on target is visible from origin
 	local function is_visible(target_char, origin)
 		if not target_char or not origin then return false end
 
@@ -589,7 +622,8 @@ function module.create(bot_model, settings)
 
 		return false
 	end
-	
+
+	-- fire at the target respecting ammo, firerate, LOS and spawn tracers
 	local function fire_at_target(target_char)
 		if not self.alive then return end
 		if self.reloading then return end
@@ -618,10 +652,9 @@ function module.create(bot_model, settings)
 		if dir.Magnitude == 0 then return end
 		local dir_unit = dir.Unit
 
-		-- play firing animation
+		-- play firing animation and sound
 		pcall(function() fire_anim_track:Play() end)
 
-		-- play firing sound
 		local fire_sound = Instance.new("Sound", handle)
 		fire_sound.SoundId = "rbxassetid://" .. tostring(self.settings.fire_sound_id or 0)
 		fire_sound.Volume = self.settings.fire_sound_volume or 0.4
@@ -633,126 +666,37 @@ function module.create(bot_model, settings)
 
 		local speed = self.settings.projectile_speed or 3000
 
+		-- fire pellets and wire up tracer ids & record active casts
 		for i = 1, (self.settings.pellets or 1) do
 			local shot_dir = random_spread_direction(dir_unit)
 
-			local ok, active = pcall(function()
-				return caster:Fire(origin, shot_dir, speed, behavior)
+			local ok, active_cast = pcall(function()
+				return caster:Fire(origin, shot_dir, speed, self._behavior)
 			end)
 
-			if ok and active then
+			if ok and active_cast then
 				local cast_id = generate_cast_id()
-				table.insert(self.active_casts, {id = cast_id, cast = active})
+				table.insert(self.active_casts, {id = cast_id, cast = active_cast})
 
 				-- notify clients to spawn tracer (use cast ID, not object)
 				tracer_event:FireAllClients("start", cast_id, origin, shot_dir, speed)
 			end
 		end
 
-		self.current_ammo -= 1
+		-- decrement ammo once per trigger event (pellets are part of one shot)
+		self.current_ammo = (self.current_ammo or 0) - 1
 		if self.current_ammo <= 0 then
 			do_reload()
 		end
 	end
-	
-	--[[
-	--  fire a single shot (LOS gated, respects ammo and firerate)
-	local function fire_at_target(target_char)
-		if not self.alive then return end
-		if self.reloading then return end
-		if (self.current_ammo or 0) <= 0 then do_reload() return end
 
-		local now = os.clock()
-		local fire_interval = 60 / (self.settings.firerate or 600)
-		if now - self.last_fire_time < fire_interval then return end
-		self.last_fire_time = now
-
-		local target_hrp = target_char and target_char:FindFirstChild("HumanoidRootPart")
-		if not target_hrp then return end
-		local origin = firing_point and firing_point.WorldPosition or humanoid_root.Position
-		if not origin then return end
-
-		--  offset origin slightly forward along look direction to prevent wall clipping
-		local look_dir = (target_hrp.Position - humanoid_root.Position)
-		if look_dir.Magnitude > 0 then
-			origin = origin + look_dir.Unit * 0.5
-		end
-
-		if not is_visible(target_char, origin) then return end
-
-		local dir = (target_hrp.Position - origin)
-		if dir.Magnitude == 0 then return end
-		local dir_unit = dir.Unit
-
-		pcall(function() fire_anim_track:Play() end)
-
-		local fire_sound = Instance.new("Sound", handle)
-		fire_sound.SoundId = "rbxassetid://" .. tostring(self.settings.fire_sound_id or 0)
-		fire_sound.Volume = self.settings.fire_sound_volume or 0.4
-
-		-- randomize pitch slightly per shot to avoid repetitiveness
-		local base_pitch = self.settings.fire_sound_pitch or 1
-		fire_sound.PlaybackSpeed = base_pitch * (1 + (math.random() * 0.2 - 0.1)) -- 10% variation
-
-		fire_sound.RollOffMode = Enum.RollOffMode.Linear
-		fire_sound.RollOffMinDistance = 5
-		fire_sound.RollOffMaxDistance = 300
-
-		fire_sound:Play()
-		debris:AddItem(fire_sound, 5)
-
-		for i = 1, (self.settings.pellets or 1) do
-			local shot_dir = random_spread_direction(dir_unit)
-			local ok, active = pcall(function()
-				return caster:Fire(origin, shot_dir, self.settings.projectile_speed or 3000, behavior)
-			end)
-
-			if ok and active then 
-				table.insert(self.active_casts, active)
-
-				-- attempt to capture the cosmetic object (may be created asynchronously by fastcast)
-				task.spawn(function()
-					-- try a few times with a short delay to catch async creation
-					for attempt = 1, 6 do
-						if not active then break end
-						local found = nil
-						-- try known places
-						local success, info = pcall(function() return active.CastRayInfo end)
-						if success and info and info.CosmeticBulletObject then
-							found = info.CosmeticBulletObject
-						end
-						if not found and active.CosmeticBulletObject then
-							found = active.CosmeticBulletObject
-						end
-						if not found and active._CosmeticBulletObject then
-							found = active._CosmeticBulletObject
-						end
-						-- record and exit if found
-						if found then
-							self._cosmetics[active] = found
-							break
-						end
-						task.wait(0.02)
-					end
-				end)
-			end
-		end
-
-		self.current_ammo = (self.current_ammo or 0) - 1
-
-		if (self.current_ammo or 0) <= 0 then 
-			do_reload() 
-		end
-	end
-	--[[]]
-
-	--  create noobpath instance with safe callbacks (wrap humanoid MoveTo/Jump)
+	-- create noobpath instance with safe callbacks (wrap humanoid MoveTo/Jump)
 	local function create_noobpath()
 		local agent_params = self.settings.noobpath_agent or {}
-		--  pass humanoid so factory can safely use MoveTo/Jump checks; provide stop callback to clear last_goal
+		-- pass humanoid so factory can safely use MoveTo/Jump checks; provide stop callback to clear last_goal
 		local ok, np = pcall(function()
 			return noobpath_factory.create(self.bot, humanoid, agent_params, self.settings.noobpath_speed, function()
-				--  keep controller state in sync when np traps/errors
+				-- keep controller state in sync when np traps/errors
 				self.last_goal = nil
 			end)
 		end)
@@ -764,7 +708,7 @@ function module.create(bot_model, settings)
 		return nil
 	end
 
-	--  compute destination vector for current path mode (aggressive vs tactical)
+	-- compute destination vector for current path mode (aggressive vs tactical)
 	local function compute_destination_for_target(mode, hrp)
 		if not hrp then return humanoid_root.Position end
 		if mode == "aggressive" then
@@ -777,7 +721,7 @@ function module.create(bot_model, settings)
 		end
 	end
 
-	--  choose path mode by LOS (tactical if visible, aggressive otherwise)
+	-- choose path mode by LOS (tactical if visible, aggressive otherwise)
 	local function decide_path_mode(target_char)
 		if not target_char then
 			return "aggressive"
@@ -804,7 +748,7 @@ function module.create(bot_model, settings)
 		return "aggressive"
 	end
 
-	--  ensure path is created and update proactively when needed (throttled)
+	-- ensure path is created and update proactively when needed (throttled)
 	local function ensure_path_to_destination(destination)
 		if not destination then return end
 
@@ -843,7 +787,7 @@ function module.create(bot_model, settings)
 		end
 	end
 
-	--  update path logic per heartbeat (handles tactical retreat, clipping to max_path_distance)
+	-- update path logic per heartbeat (handles tactical retreat, clipping to max_path_distance)
 	local function update_path_to_target()
 		if not self.alive then return end
 		if not self.target_char then
@@ -887,7 +831,7 @@ function module.create(bot_model, settings)
 		ensure_path_to_destination(destination)
 	end
 
-	--  pick closest enemy within engagement range for targeting (players + bots)
+	-- pick closest enemy within engagement range for targeting (players + bots)
 	local function get_closest_player_within_range()
 		local closest_char = nil
 		local closest_dist = math.huge
@@ -895,7 +839,7 @@ function module.create(bot_model, settings)
 		local my_team = get_team_from_model(self.bot)
 		local max_range = self.settings.engagement_range or 225
 
-		--  check one character model safely
+		-- check one character model safely
 		local function try_candidate(char)
 			if not char or char == self.bot then return end
 
@@ -916,12 +860,12 @@ function module.create(bot_model, settings)
 			end
 		end
 
-		--  scan real players
+		-- scan real players
 		for _, plr in ipairs(players:GetPlayers()) do
 			try_candidate(plr.Character)
 		end
 
-		--  scan bot folder only (no workspace-wide scan)
+		-- scan bot folder only (no workspace-wide scan)
 		local bot_folder = workspace:FindFirstChild("bots")
 		if bot_folder then
 			for _, bot_model in ipairs(bot_folder:GetChildren()) do
@@ -932,6 +876,7 @@ function module.create(bot_model, settings)
 		return closest_char
 	end
 
+	-- update arms and head to look at target (R6 only)
 	local function update_bot_arms_and_head(bot_model, humanoid, target_char, delta)
 		if not humanoid or not humanoid.Parent then return end
 		if humanoid.RigType ~= Enum.HumanoidRigType.R6 then return end
@@ -1001,7 +946,7 @@ function module.create(bot_model, settings)
 		end
 	end
 
-	--  heartbeat step picks target, updates path, fires
+	-- heartbeat step picks target, updates path, fires
 	local function heartbeat_step()
 		if not self.alive then
 			return
@@ -1036,7 +981,7 @@ function module.create(bot_model, settings)
 		end
 	end
 
-	--  start controller (connect heartbeat)
+	-- start controller (connect heartbeat)
 	function self:start()
 		if self.heartbeat_conn then return end
 		self.heartbeat_conn = runservice.Heartbeat:Connect(function()
@@ -1044,7 +989,7 @@ function module.create(bot_model, settings)
 		end)
 	end
 
-	--  stop controller (disconnect heartbeat, stop path, terminate casts)
+	-- stop controller (disconnect heartbeat, stop path, terminate casts)
 	function self:stop()
 		if self.heartbeat_conn then
 			self.heartbeat_conn:Disconnect()
@@ -1059,13 +1004,18 @@ function module.create(bot_model, settings)
 
 		self.last_goal = nil
 
-		-- terminate all active fastcast bullets
+		-- terminate all active fastcast bullets (handle stored entry shape)
 		for i = #self.active_casts, 1, -1 do
-			local ac = self.active_casts[i]
-			if ac and ac.Terminate then
-				pcall(function()
-					ac:Terminate()
-				end)
+			local entry = self.active_casts[i]
+			if entry then
+				-- entry expected to be {id = cast_id, cast = active_cast}
+				if entry.cast and entry.cast.Terminate then
+					pcall(function() entry.cast:Terminate() end)
+				end
+				-- notify clients to stop tracer if id exists
+				if entry.id then
+					pcall(function() tracer_event:FireAllClients("stop", entry.id) end)
+				end
 			end
 			self.active_casts[i] = nil
 		end
@@ -1076,11 +1026,19 @@ function module.create(bot_model, settings)
 			self._anim_controller = nil
 		end
 
+		-- clear cosmetics
+		for cast_key, cos in pairs(self._cosmetics) do
+			pcall(function()
+				if cos and cos.Parent then cos:Destroy() end
+			end)
+			self._cosmetics[cast_key] = nil
+		end
+
 		self.alive = false
 		self.reloading = false
 	end
 
-	--  destroy controller fully and remove from registry
+	-- destroy controller fully and remove from registry
 	function self:destroy()
 		self:stop()
 		for i, v in ipairs(controllers) do
@@ -1094,3 +1052,4 @@ function module.create(bot_model, settings)
 end
 
 return module
+-- end of bot_controller

@@ -1,8 +1,10 @@
+-- Data_Player Modules
+
 local Data_Player = {}
 
 local Pockets_Amount = 7
 
-function Data_Player.AddItem(player,add_item,add_amount,ID) 
+function Data_Player.AddItem(player, add_item, add_amount, ID) 
 	if not Data_Player[player.UserId] then
 		
 		Data_Player[player.UserId] = {
@@ -12,8 +14,15 @@ function Data_Player.AddItem(player,add_item,add_amount,ID)
 				Hotbar3 = {empty = true},
 				Hotbar4 = {empty = true}
 			},
-			Pockets = {},
-			Backpack = {},
+
+			Pockets = {
+
+			},
+
+			Backpack = {
+
+			},
+
 			Armor = {
 				Head = {empty = true},
 				Mask = {empty = true},
@@ -22,9 +31,9 @@ function Data_Player.AddItem(player,add_item,add_amount,ID)
 				Arm = {empty = true},
 				Backpack = {empty = true}
 			},
+
 			Health = 100
 		}
-		
 		
 		for i = 1, Pockets_Amount do
 			Data_Player[player.UserId].Pockets["Pocket"..i] = {empty = true}
@@ -44,27 +53,26 @@ function Filter_Data(add_item, add_amount, Pockets,Backpack,player,ID)
 		return string.gsub(game:GetService("HttpService"):GenerateGUID(false), "-", "")
 	end
 	
-	
-	-- จัดเรียง Pockets ตามชื่อ (เช่น Pocket1, Pocket2, ...)
+	-- Arrange Pockets As the name suggests. (such as Pocket1, Pocket2, ...)
 	local sortedKeys = {}
 	for key in pairs(Pockets) do
 		table.insert(sortedKeys, key)
 	end
 
 	table.sort(sortedKeys, function(a, b)
-		local numA = tonumber(a:match("%d+")) -- ดึงตัวเลขจากชื่อ เช่น "Pocket1" จะได้ 1
+		local numA = tonumber(a:match("%d+")) -- Extract the numbers from the names, for example: "Pocket1" You will get 1
 		local numB = tonumber(b:match("%d+"))
-		return numA < numB -- เรียงจากน้อยไปมาก
+		return numA < numB -- Sorted from smallest to largest.
 	end)
 
-	-- วนลูปตามลำดับที่จัดเรียง
+	-- Loop through the items in the arranged order.
 	for _, key in ipairs(sortedKeys) do
 		local data = Pockets[key]
 		if add_amount == 0 then
 			break
 		end
 
-		-- ถ้ามีไอเท็มชนิดเดียวกันและยังไม่เต็ม
+		-- If there are items of the same type and the inventory is not yet full.
 		if not data.empty and data.id == add_item.id and data.amount < add_item.maxstack then
 			local space_left = add_item.maxstack - data.amount
 			local to_add = math.min(space_left, add_amount)
@@ -72,7 +80,7 @@ function Filter_Data(add_item, add_amount, Pockets,Backpack,player,ID)
 			data.amount = data.amount + to_add
 			add_amount = add_amount - to_add
 		elseif add_amount > 0 and data.empty then
-			print(key) -- พิมพ์ชื่อช่อง เช่น Pocket1, Pocket2, ...
+			print(key) -- Type the channel name, for example: Pocket1, Pocket2, ...
 			if add_item.class == "Backpack" then
 				data.id = add_item.id
 				data.name = add_item.name
@@ -84,13 +92,15 @@ function Filter_Data(add_item, add_amount, Pockets,Backpack,player,ID)
 				data.Owner = player.UserId
 				data.health = add_item.health
 				data.empty = false
+
 				if ID then
 					data.Backpack_ID = ID
 				else
 					data.Backpack_ID = Hash(os.time() .. math.random())
 				end
 			end
-			-- ถ้าช่องว่างและยังมีจำนวนเหลือ
+			
+			-- If there are empty spaces and a remaining quantity.
 			local to_add = math.min(add_item.maxstack, add_amount)
 
 			data.id = add_item.id
@@ -114,7 +124,7 @@ function Filter_Data(add_item, add_amount, Pockets,Backpack,player,ID)
 					break
 				end
 
-				-- ถ้ามีไอเท็มชนิดเดียวกันและยังไม่เต็ม
+				-- If there are items of the same type and the inventory is not yet full.
 				if not data.empty and data.id == add_item.id and data.amount < add_item.maxstack then
 					local space_left = add_item.maxstack - data.amount
 					local to_add = math.min(space_left, add_amount)
@@ -122,7 +132,8 @@ function Filter_Data(add_item, add_amount, Pockets,Backpack,player,ID)
 					data.amount = data.amount + to_add
 					add_amount = add_amount - to_add
 				elseif add_amount > 0 and data.empty and add_item.class ~= "Backpack" then
-					-- ถ้าช่องว่างและยังมีจำนวนเหลือ
+
+					-- If there are empty spaces and a remaining quantity.
 					local to_add = math.min(add_item.maxstack, add_amount)
 
 					data.id = add_item.id
